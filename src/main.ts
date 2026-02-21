@@ -309,9 +309,9 @@ const waveConfig = [
 const canvas = document.createElement('canvas');
 document.body.appendChild(canvas);
 
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: !isMobile });
 renderer.setSize(window.innerWidth, window.innerHeight);
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setPixelRatio(isMobile ? 1 : Math.min(window.devicePixelRatio, 2));
 // renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.shadowMap.enabled = false;
 
