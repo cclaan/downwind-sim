@@ -898,7 +898,9 @@ const hudHeight = document.querySelector('#hud-height') as HTMLElement;
 const hudHeightFill = document.querySelector('#height-bar-fill') as HTMLElement;
 const hudEnergy = document.querySelector('#hud-energy') as HTMLElement;
 const hudEnergyFill = document.querySelector('#energy-bar-fill') as HTMLElement;
-const hudMessage = document.querySelector('#hud-message') as HTMLElement;
+const hudTitle = document.querySelector('#hud-title') as HTMLElement;
+const hudSubtitle = document.querySelector('#hud-subtitle') as HTMLElement;
+const hudControls = document.querySelector('#hud-controls') as HTMLElement;
 
 const distanceContainer = document.querySelector('#distance-container') as HTMLElement;
 const distanceLabel = document.querySelector('#distance-label') as HTMLElement;
@@ -928,13 +930,17 @@ function updateHUD() {
     updateRaceHUD();
 
     if (gameState === 'starting') {
-        hudMessage.textContent = 'Press SPACE to launch\n\n← → Turn  ·  ↑ ↓ Pitch  ·  SPACE Pump';
-        hudMessage.style.whiteSpace = 'pre-line';
+        hudTitle.textContent = '🏄 Downwind';
+        hudSubtitle.textContent = 'race to 2 km · pump to stay on foil';
+        hudControls.textContent = '← → Turn  ·  ↑ ↓ Pitch  ·  SPACE Pump\n\nPress SPACE to launch';
     } else if (gameState === 'crashed') {
-        hudMessage.textContent = 'Off Foil!\nPress R to restart';
-        hudMessage.style.whiteSpace = 'pre-line';
+        hudTitle.textContent = 'Off Foil!';
+        hudSubtitle.textContent = '';
+        hudControls.textContent = 'Press R to restart';
     } else {
-        hudMessage.textContent = '';
+        hudTitle.textContent = '';
+        hudSubtitle.textContent = '';
+        hudControls.textContent = '';
     }
 }
 
