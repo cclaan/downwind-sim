@@ -1,6 +1,6 @@
 # Downwind Foil Sim
 
-A browser-based hydrofoil downwind riding simulator built with Three.js and TypeScript.
+A browser-based hydrofoil downwind riding simulator vibe coded with Three.js and TypeScript.
 
 **[Live demo →](https://usedwatersports.com/downwind-sim)**
 
