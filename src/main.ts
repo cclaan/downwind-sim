@@ -72,7 +72,7 @@ const FOIL_PRESETS: Record<string, FoilConfig> = {
 let activeFoil: FoilConfig = { ...FOIL_PRESETS['High Aspect Race'] };
 
 // --- RACE CONFIGURATION ---
-const RACE_LENGTH_KM = 2; // total race distance — adjust to change level length
+const RACE_LENGTH_KM = 1; // total race distance — adjust to change level length
 const RACE_START_Z = SPAWN_POINT.z; // player starts here; race km marks are at RACE_START_Z + k*1000
 
 // Returns how far the player has travelled directly downwind (Z-axis progress).
@@ -189,6 +189,47 @@ function fmtTime(seconds: number): string {
     const m = Math.floor(seconds / 60);
     const s = seconds % 60;
     return `${m}:${s.toFixed(1).padStart(4, '0')}`;
+}
+
+// --- HIGH SCORES (localStorage) ---
+const HIGH_SCORE_MAX = 3;
+
+interface HighScoreEntry {
+    time: number;
+    date: string; // ISO date string
+}
+
+function highScoreKey(km: number): string {
+    return `downwind-highscores-${km}km`;
+}
+
+function loadHighScores(km: number): HighScoreEntry[] {
+    try {
+        const raw = localStorage.getItem(highScoreKey(km));
+        if (!raw) return [];
+        const parsed = JSON.parse(raw);
+        if (!Array.isArray(parsed)) return [];
+        return parsed
+            .filter((e: any) => typeof e.time === 'number' && typeof e.date === 'string')
+            .sort((a: HighScoreEntry, b: HighScoreEntry) => a.time - b.time)
+            .slice(0, HIGH_SCORE_MAX);
+    } catch {
+        return [];
+    }
+}
+
+function saveHighScore(km: number, time: number): { rank: number; isNew: boolean } {
+    const scores = loadHighScores(km);
+    const entry: HighScoreEntry = { time, date: new Date().toISOString() };
+    scores.push(entry);
+    scores.sort((a, b) => a.time - b.time);
+    const rank = scores.findIndex(e => e === entry) + 1;
+    const trimmed = scores.slice(0, HIGH_SCORE_MAX);
+    const isNew = rank <= HIGH_SCORE_MAX;
+    try {
+        localStorage.setItem(highScoreKey(km), JSON.stringify(trimmed));
+    } catch { /* quota exceeded — silently ignore */ }
+    return { rank, isNew };
 }
 
 // --- INPUT STATE ---
@@ -824,25 +865,9 @@ function updateRiderAnimation() {
     }
 }
 
-// --- HUD ---
-const hudContainer = document.createElement('div');
-hudContainer.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);font-family:monospace;color:#fff;pointer-events:none;z-index:100;display:flex;flex-direction:column;align-items:stretch;gap:8px;background:rgba(0,0,0,0.35);padding:10px 20px;border-radius:12px;backdrop-filter:blur(4px);min-width:340px;';
-document.body.appendChild(hudContainer);
-
-const speedBarRow = document.createElement('div');
-speedBarRow.style.cssText = 'display:flex;align-items:center;gap:10px;';
-hudContainer.appendChild(speedBarRow);
-
-const hudSpeed = document.createElement('div');
-hudSpeed.style.cssText = 'font-size:18px;font-weight:bold;text-shadow:0 2px 4px rgba(0,0,0,0.7);white-space:nowrap;min-width:80px;text-align:right;';
-speedBarRow.appendChild(hudSpeed);
-
-const speedBarOuter = document.createElement('div');
-speedBarOuter.style.cssText = 'flex:1;height:10px;background:rgba(255,255,255,0.15);border-radius:5px;overflow:hidden;';
-const hudSpeedFill = document.createElement('div');
-hudSpeedFill.style.cssText = 'height:100%;border-radius:5px;transition:width 0.1s,background 0.3s;width:0%;';
-speedBarOuter.appendChild(hudSpeedFill);
-speedBarRow.appendChild(speedBarOuter);
+// --- HUD (elements defined in index.html, styled in style.css) ---
+const hudSpeed = document.querySelector('#hud-speed') as HTMLElement;
+const hudSpeedFill = document.querySelector('#speed-bar-fill') as HTMLElement;
 
 const SPEED_BAR_MAX_KTS = 30;
 
@@ -869,55 +894,15 @@ function speedColor(knots: number): string {
     }
 }
 
-const detailRow = document.createElement('div');
-detailRow.style.cssText = 'display:flex;align-items:center;justify-content:center;gap:20px;';
-hudContainer.appendChild(detailRow);
+const hudHeight = document.querySelector('#hud-height') as HTMLElement;
+const hudHeightFill = document.querySelector('#height-bar-fill') as HTMLElement;
+const hudEnergy = document.querySelector('#hud-energy') as HTMLElement;
+const hudEnergyFill = document.querySelector('#energy-bar-fill') as HTMLElement;
+const hudMessage = document.querySelector('#hud-message') as HTMLElement;
 
-const makeBarGroup = (barColor: string) => {
-    const group = document.createElement('div');
-    group.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:3px;';
-    const text = document.createElement('div');
-    text.style.cssText = 'font-size:12px;text-shadow:0 1px 3px rgba(0,0,0,0.7);white-space:nowrap;';
-    group.appendChild(text);
-    const bar = document.createElement('div');
-    bar.style.cssText = 'width:120px;height:6px;background:rgba(255,255,255,0.2);border-radius:3px;overflow:hidden;';
-    const fill = document.createElement('div');
-    fill.style.cssText = `height:100%;background:${barColor};border-radius:3px;transition:width 0.1s;`;
-    bar.appendChild(fill);
-    group.appendChild(bar);
-    return { group, text, fill };
-};
-
-const heightGroup = makeBarGroup('#4fc3f7');
-detailRow.appendChild(heightGroup.group);
-const hudHeight = heightGroup.text;
-const hudHeightFill = heightGroup.fill;
-
-const energyGroup = makeBarGroup('#aed581');
-detailRow.appendChild(energyGroup.group);
-const hudEnergy = energyGroup.text;
-const hudEnergyFill = energyGroup.fill;
-
-const hudMessage = document.createElement('div');
-hudMessage.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);font-family:monospace;color:#fff;font-size:32px;font-weight:bold;text-shadow:0 3px 8px rgba(0,0,0,0.8);text-align:center;pointer-events:none;z-index:101;';
-document.body.appendChild(hudMessage);
-
-// --- DISTANCE BAR (top center) ---
-const DISTANCE_MILESTONE = 500; // meters per segment
-const distanceContainer = document.createElement('div');
-distanceContainer.style.cssText = 'position:fixed;top:16px;left:50%;transform:translateX(-50%);font-family:monospace;color:#fff;pointer-events:none;z-index:100;display:flex;flex-direction:column;align-items:center;gap:4px;background:rgba(0,0,0,0.35);padding:8px 24px;border-radius:10px;backdrop-filter:blur(4px);min-width:280px;';
-document.body.appendChild(distanceContainer);
-
-const distanceLabel = document.createElement('div');
-distanceLabel.style.cssText = 'font-size:14px;font-weight:bold;text-shadow:0 1px 3px rgba(0,0,0,0.7);letter-spacing:1px;';
-distanceContainer.appendChild(distanceLabel);
-
-const distanceBarOuter = document.createElement('div');
-distanceBarOuter.style.cssText = 'width:100%;height:8px;background:rgba(255,255,255,0.15);border-radius:4px;overflow:hidden;';
-const distanceBarFill = document.createElement('div');
-distanceBarFill.style.cssText = 'height:100%;background:linear-gradient(90deg,#42a5f5,#ab47bc);border-radius:4px;transition:width 0.15s;width:0%;';
-distanceBarOuter.appendChild(distanceBarFill);
-distanceContainer.appendChild(distanceBarOuter);
+const distanceContainer = document.querySelector('#distance-container') as HTMLElement;
+const distanceLabel = document.querySelector('#distance-label') as HTMLElement;
+const distanceBarFill = document.querySelector('#distance-bar-fill') as HTMLElement;
 
 function updateHUD() {
     const knots = foilState.speed * 1.944;
@@ -934,17 +919,11 @@ function updateHUD() {
     hudEnergy.textContent = `Energy: ${Math.round(foilState.energy)}`;
     hudEnergyFill.style.width = `${foilState.energy}%`;
 
-    // Distance bar — race mode overrides the generic display
-    if (!race.active && !race.finished) {
-        const dist = foilState.distanceTravelled;
-        if (dist >= 1000) {
-            distanceLabel.textContent = `Distance: ${(dist / 1000).toFixed(2)} km`;
-        } else {
-            distanceLabel.textContent = `Distance: ${Math.round(dist)} m`;
-        }
-        const segmentProgress = ((dist % DISTANCE_MILESTONE) / DISTANCE_MILESTONE) * 100;
-        distanceBarFill.style.width = `${segmentProgress}%`;
-        distanceBarFill.style.background = 'linear-gradient(90deg,#42a5f5,#ab47bc)';
+    // Hide distance bar before the race; show during riding/crashed
+    if (gameState === 'starting') {
+        distanceContainer.style.display = 'none';
+    } else {
+        distanceContainer.style.display = '';
     }
     updateRaceHUD();
 
@@ -960,71 +939,64 @@ function updateHUD() {
 }
 
 
-// --- RACE HUD ELEMENTS ---
+// --- RACE HUD ELEMENTS (defined in index.html, styled in style.css) ---
+const raceTimerEl = document.querySelector('#race-timer') as HTMLElement;
+const kmTickRow = document.querySelector('#km-tick-row') as HTMLElement;
+const kmSplitsRow = document.querySelector('#km-splits-row') as HTMLElement;
+const splitFlashEl = document.querySelector('#split-flash') as HTMLElement;
+const finishOverlay = document.querySelector('#finish-overlay') as HTMLElement;
 
-// Add race timer to the right side of the distance container (top bar)
-const raceTimerEl = document.createElement('div');
-raceTimerEl.style.cssText = 'font-size:15px;font-weight:bold;letter-spacing:1px;color:#ffeb3b;text-shadow:0 1px 4px rgba(0,0,0,0.8);align-self:center;display:none;';
-distanceContainer.appendChild(raceTimerEl);
-
-// Km tick marks row — small labels below the progress bar
-const kmTickRow = document.createElement('div');
-kmTickRow.style.cssText = 'width:100%;display:flex;justify-content:space-between;padding:0 1px;margin-top:2px;font-size:10px;color:rgba(255,255,255,0.5);display:none;';
-distanceContainer.appendChild(kmTickRow);
+// Populate km tick marks
 for (let k = 1; k <= RACE_LENGTH_KM; k++) {
     const tick = document.createElement('span');
     tick.textContent = `${k}km`;
     kmTickRow.appendChild(tick);
 }
 
-// Km split times row
-const kmSplitsRow = document.createElement('div');
-kmSplitsRow.style.cssText = 'width:100%;display:flex;justify-content:flex-start;flex-wrap:wrap;gap:10px;margin-top:4px;font-size:11px;color:rgba(255,255,255,0.85);display:none;';
-distanceContainer.appendChild(kmSplitsRow);
-
-// Center-screen split flash ("KM 1  4:02.3")
-const splitFlashEl = document.createElement('div');
-splitFlashEl.style.cssText = [
-    'position:fixed', 'top:28%', 'left:50%', 'transform:translate(-50%,-50%)',
-    'font-family:monospace', 'color:#ffeb3b', 'font-size:30px', 'font-weight:bold',
-    'text-shadow:0 3px 10px rgba(0,0,0,0.85)', 'text-align:center',
-    'pointer-events:none', 'z-index:102', 'opacity:0', 'transition:opacity 0.25s',
-    'white-space:pre-line',
-].join(';');
-document.body.appendChild(splitFlashEl);
-
-// Finish result overlay
-const finishOverlay = document.createElement('div');
-finishOverlay.style.cssText = [
-    'position:fixed', 'top:50%', 'left:50%', 'transform:translate(-50%,-50%)',
-    'font-family:monospace', 'color:#fff',
-    'background:rgba(0,0,0,0.82)', 'padding:32px 56px', 'border-radius:18px',
-    'text-align:center', 'pointer-events:none', 'z-index:200', 'display:none',
-    'backdrop-filter:blur(10px)', 'border:1.5px solid rgba(255,255,255,0.18)',
-    'min-width:320px',
-].join(';');
-document.body.appendChild(finishOverlay);
-
 function showRaceResults() {
     const total = race.totalElapsed;
     const avgPerKm = total / RACE_LENGTH_KM;
 
-    let html = `<div style="font-size:30px;font-weight:bold;color:#ffeb3b;margin-bottom:14px;letter-spacing:2px;">RACE COMPLETE</div>`;
-    html += `<div style="font-size:22px;margin-bottom:18px;">Total&nbsp; <span style="color:#4fc3f7">${fmtTime(total)}</span></div>`;
-    html += `<div style="border-top:1px solid rgba(255,255,255,0.25);padding-top:12px;margin-bottom:12px;display:flex;flex-direction:column;gap:6px;">`;
+    const { rank, isNew } = saveHighScore(RACE_LENGTH_KM, total);
+    const scores = loadHighScores(RACE_LENGTH_KM);
+
+    let html = `<div class="finish-title">RACE COMPLETE</div>`;
+    if (isNew && rank === 1) {
+        html += `<div class="finish-newbest">NEW BEST!</div>`;
+    } else if (isNew) {
+        html += `<div class="finish-newbest finish-newbest--top3">TOP ${rank}!</div>`;
+    }
+    html += `<div class="finish-total">Total&nbsp; <span class="finish-total-time">${fmtTime(total)}</span></div>`;
+    html += `<div class="finish-splits">`;
 
     let prevElapsed = 0;
     for (let i = 0; i < race.kmSplitTimes.length; i++) {
         const elapsed = race.kmSplitTimes[i];
         const split = elapsed - prevElapsed;
-        html += `<div style="font-size:15px;display:flex;justify-content:space-between;gap:24px;">` +
-            `<span style="color:rgba(255,255,255,0.6)">KM ${i + 1}</span>` +
-            `<span style="color:#4fc3f7">${fmtTime(split)}</span></div>`;
+        html += `<div class="finish-split-row">` +
+            `<span class="finish-split-label">KM ${i + 1}</span>` +
+            `<span class="finish-split-time">${fmtTime(split)}</span></div>`;
         prevElapsed = elapsed;
     }
     html += `</div>`;
-    html += `<div style="font-size:14px;color:rgba(255,255,255,0.6);margin-bottom:18px;">Avg / km &nbsp;<span style="color:#aed581">${fmtTime(avgPerKm)}</span></div>`;
-    html += `<div style="font-size:13px;color:rgba(255,255,255,0.4);">Press R to restart</div>`;
+    html += `<div class="finish-avg">Avg / km &nbsp;<span class="finish-avg-time">${fmtTime(avgPerKm)}</span></div>`;
+
+    if (scores.length > 0) {
+        html += `<div class="finish-highscores">`;
+        html += `<div class="finish-highscores-title">BEST TIMES — ${RACE_LENGTH_KM} km</div>`;
+        const medals = ['🥇', '🥈', '🥉'];
+        for (let i = 0; i < scores.length; i++) {
+            const isCurrent = scores[i].time === total && i === rank - 1;
+            const rowClass = isCurrent ? 'finish-hs-row finish-hs-row--current' : 'finish-hs-row';
+            html += `<div class="${rowClass}">` +
+                `<span class="finish-hs-rank">${medals[i] || (i + 1)}</span>` +
+                `<span class="finish-hs-time">${fmtTime(scores[i].time)}</span>` +
+                `</div>`;
+        }
+        html += `</div>`;
+    }
+
+    html += `<div class="finish-hint">Press R to restart</div>`;
 
     finishOverlay.innerHTML = html;
     finishOverlay.style.display = 'block';
@@ -1049,12 +1021,22 @@ function updateRaceHUD() {
         kmSplitsRow.style.display = 'flex';
     } else if (race.active) {
         const racePct = Math.min(dwind / totalRaceDist, 1) * 100;
-        // Primary: downwind progress. Secondary: total path in smaller text.
         distanceLabel.textContent =
             `${(dwind / 1000).toFixed(2)} / ${RACE_LENGTH_KM} km` +
             `  · path ${(path / 1000).toFixed(2)} km`;
         distanceBarFill.style.width = `${racePct}%`;
         distanceBarFill.style.background = 'linear-gradient(90deg,#ffeb3b,#ff9800)';
+        raceTimerEl.textContent = fmtTime(race.totalElapsed);
+        raceTimerEl.style.display = 'block';
+        kmTickRow.style.display = 'flex';
+        kmSplitsRow.style.display = 'flex';
+    } else if (gameState === 'crashed' && path > 0) {
+        const racePct = Math.min(dwind / totalRaceDist, 1) * 100;
+        distanceLabel.textContent =
+            `Crashed at ${(dwind / 1000).toFixed(2)} / ${RACE_LENGTH_KM} km` +
+            `  · path ${(path / 1000).toFixed(2)} km`;
+        distanceBarFill.style.width = `${racePct}%`;
+        distanceBarFill.style.background = 'linear-gradient(90deg,#ef5350,#ff7043)';
         raceTimerEl.textContent = fmtTime(race.totalElapsed);
         raceTimerEl.style.display = 'block';
         kmTickRow.style.display = 'flex';
@@ -1071,7 +1053,7 @@ function updateRaceHUD() {
         const prev = i > 0 ? race.kmSplitTimes[i - 1] : 0;
         const split = race.kmSplitTimes[i] - prev;
         const badge = document.createElement('span');
-        badge.style.cssText = 'color:#4fc3f7;white-space:nowrap;';
+        badge.className = 'km-split-badge';
         badge.textContent = `${i + 1}km ${fmtTime(split)}`;
         kmSplitsRow.appendChild(badge);
     }
@@ -1496,17 +1478,17 @@ const poleMat = new THREE.MeshStandardMaterial({ color: 0xff6a00, roughness: 0.5
 const poleGeo = new THREE.CylinderGeometry(0.28, 0.28, 12, 8);
 
 const gateLeftPole = new THREE.Mesh(poleGeo, poleMat);
-gateLeftPole.position.set(-10, 6, 0);
+gateLeftPole.position.set(-30, 6, 0);
 finishGate.add(gateLeftPole);
 
 const gateRightPole = new THREE.Mesh(poleGeo, poleMat);
-gateRightPole.position.set(10, 6, 0);
+gateRightPole.position.set(30, 6, 0);
 finishGate.add(gateRightPole);
 
 // Big orange buoys at the base of each pole
 const gateBuoyGeo = new THREE.SphereGeometry(0.9, 10, 7);
 const gateBuoyMat = new THREE.MeshStandardMaterial({ color: 0xff6a00, roughness: 0.4 });
-[[-10], [10]].forEach(([bx]) => {
+[[-30], [30]].forEach(([bx]) => {
     const gb = new THREE.Mesh(gateBuoyGeo, gateBuoyMat);
     gb.position.set(bx, 0.9, 0);
     finishGate.add(gb);
@@ -1514,8 +1496,8 @@ const gateBuoyMat = new THREE.MeshStandardMaterial({ color: 0xff6a00, roughness:
 
 // Checkered crossbar made of alternating black/white segments
 const crossBarY = 12;
-const segCount = 11;
-const totalBarWidth = 22;
+const segCount = 33;
+const totalBarWidth = 66;
 const segW = totalBarWidth / segCount;
 const segGeo = new THREE.BoxGeometry(segW - 0.05, 0.7, 0.5);
 for (let i = 0; i < segCount; i++) {
@@ -1848,6 +1830,7 @@ function updateRace(dt: number, time: number) {
         race.finished = true;
         race.active = false;
         race.totalElapsed = time - race.startTime;
+        race.splitFlashTimer = 0;
         // Ensure all km splits are recorded
         while (race.kmSplitTimes.length < RACE_LENGTH_KM) {
             race.kmSplitTimes.push(race.totalElapsed);
@@ -1890,7 +1873,7 @@ function animate() {
     // Lateral race-track tracking: the whole course (buoys + finish gate) drifts
     // to stay centred on the player's X so markers are always visible regardless
     // of how far the rider has drifted downwind.
-    raceTrackX += (foilState.position.x - raceTrackX) * (1 - Math.exp(-0.8 * dt));
+    raceTrackX += (foilState.position.x - raceTrackX) * (1 - Math.exp(-4.0 * dt));
 
     // Bob buoys on the water surface and apply lateral tracking
     {

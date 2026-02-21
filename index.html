@@ -18,7 +18,6 @@
     <link rel="stylesheet" href="/src/style.css" />
   </head>
   <body>
-    <div id="hud"></div>
     <a
       href="https://github.com/cclaan/downwind-sim"
       target="_blank"
@@ -54,6 +53,51 @@
         transition: background 0.2s;
       }
     </style>
+
+    <!-- Bottom HUD: speed, height, energy -->
+    <div id="hud-container" class="hud-panel">
+      <div class="speed-bar-row">
+        <div id="hud-speed"></div>
+        <div class="bar-track">
+          <div id="speed-bar-fill" class="bar-fill"></div>
+        </div>
+      </div>
+      <div class="detail-row">
+        <div class="bar-group">
+          <div id="hud-height" class="bar-group-text"></div>
+          <div class="bar-track--small">
+            <div id="height-bar-fill" class="bar-fill"></div>
+          </div>
+        </div>
+        <div class="bar-group">
+          <div id="hud-energy" class="bar-group-text"></div>
+          <div class="bar-track--small">
+            <div id="energy-bar-fill" class="bar-fill"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Center-screen status message -->
+    <div id="hud-message"></div>
+
+    <!-- Top distance / race bar -->
+    <div id="distance-container" class="hud-panel">
+      <div id="distance-label"></div>
+      <div id="distance-bar-outer">
+        <div id="distance-bar-fill"></div>
+      </div>
+      <div id="race-timer"></div>
+      <div id="km-tick-row"></div>
+      <div id="km-splits-row"></div>
+    </div>
+
+    <!-- Split flash -->
+    <div id="split-flash"></div>
+
+    <!-- Finish results overlay -->
+    <div id="finish-overlay"></div>
+
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
