@@ -241,6 +241,13 @@ const input = {
     pump: false,
 };
 
+// --- MOBILE ---
+const isMobile = matchMedia('(pointer: coarse)').matches;
+
+if (isMobile) {
+    document.body.style.touchAction = 'manipulation';
+}
+
 let useChaseCamera = PARAMS.chaseCamera;
 
 // --- HELPER FUNCTIONS ---
@@ -316,6 +323,37 @@ camera.position.set(SPAWN_POINT.x, 30, SPAWN_POINT.z - 50);
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.target.copy(SPAWN_POINT);
 controls.maxPolarAngle = Math.PI / 2 - 0.05;
+
+// --- MOBILE TAP HANDLER (must come after canvas creation) ---
+if (isMobile) {
+    controls.enabled = false;
+    canvas.style.touchAction = 'manipulation';
+
+    const tapOverlay = document.createElement('div');
+    tapOverlay.id = 'mobile-tap-overlay';
+    Object.assign(tapOverlay.style, {
+        position: 'fixed',
+        inset: '0',
+        zIndex: '150',
+        cursor: 'pointer',
+        WebkitTapHighlightColor: 'transparent',
+    });
+    document.body.appendChild(tapOverlay);
+
+    function mobileTap(e: Event) {
+        e.preventDefault();
+        if (gameState === 'starting') {
+            launchFoil();
+        } else if (gameState === 'riding') {
+            input.pump = true;
+        } else if (gameState === 'crashed') {
+            resetFoilState();
+        }
+    }
+
+    tapOverlay.addEventListener('touchend', mobileTap);
+    tapOverlay.addEventListener('click', mobileTap);
+}
 
 // --- LIGHTING & ENVIRONMENT ---
 const ambientLight = new THREE.AmbientLight(0xffffff, PARAMS.ambientIntensity);
@@ -932,11 +970,15 @@ function updateHUD() {
     if (gameState === 'starting') {
         hudTitle.textContent = '🏄 Downwind';
         hudSubtitle.textContent = 'race to 2 km · pump to stay on foil';
-        hudControls.textContent = '← → Turn  ·  ↑ ↓ Pitch  ·  SPACE Pump\n\nPress SPACE to launch';
+        if (isMobile) {
+            hudControls.textContent = 'Tap to launch';
+        } else {
+            hudControls.textContent = '← → Turn  ·  ↑ ↓ Pitch  ·  SPACE Pump\n\n    Press SPACE to launch';
+        }
     } else if (gameState === 'crashed') {
         hudTitle.textContent = 'Off Foil!';
         hudSubtitle.textContent = '';
-        hudControls.textContent = 'Press R to restart';
+        hudControls.textContent = isMobile ? 'Tap to restart' : 'Press R to restart';
     } else {
         hudTitle.textContent = '';
         hudSubtitle.textContent = '';

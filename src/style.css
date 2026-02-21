@@ -379,3 +379,11 @@ canvas {
   font-size: 13px;
   color: rgba(255, 255, 255, 0.4);
 }
+
+/* ---------- mobile: hide desktop-only UI ---------- */
+@media (max-width: 768px), (pointer: coarse) {
+  .lil-gui {
+    display: none !important;
+  }
+}
+

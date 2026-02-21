@@ -13,7 +13,7 @@
     </script>
     
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
     <title>Downwind Foiling – Wave Sim</title>
     <link rel="stylesheet" href="/src/style.css" />
   </head>
@@ -51,6 +51,9 @@
         border-right: 1px solid rgba(255, 255, 255, 0.12);
         border-bottom: 1px solid rgba(255, 255, 255, 0.12);
         transition: background 0.2s;
+      }
+      @media (max-width: 768px), (pointer: coarse) {
+        #github-banner { display: none !important; }
       }
     </style>
 
