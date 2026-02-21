@@ -239,6 +239,8 @@ const input = {
     up: false,
     down: false,
     pump: false,
+    steerX: 0,
+    pitchY: 0,
 };
 
 // --- MOBILE ---
@@ -324,35 +326,145 @@ const controls = new OrbitControls(camera, renderer.domElement);
 controls.target.copy(SPAWN_POINT);
 controls.maxPolarAngle = Math.PI / 2 - 0.05;
 
-// --- MOBILE TAP HANDLER (must come after canvas creation) ---
+// --- MOBILE VIRTUAL JOYSTICK & TAP HANDLER (must come after canvas creation) ---
 if (isMobile) {
     controls.enabled = false;
-    canvas.style.touchAction = 'manipulation';
+    canvas.style.touchAction = 'none';
 
-    const tapOverlay = document.createElement('div');
-    tapOverlay.id = 'mobile-tap-overlay';
-    Object.assign(tapOverlay.style, {
+    const touchOverlay = document.createElement('div');
+    touchOverlay.id = 'mobile-touch-overlay';
+    Object.assign(touchOverlay.style, {
         position: 'fixed',
         inset: '0',
         zIndex: '150',
-        cursor: 'pointer',
+        touchAction: 'none',
         WebkitTapHighlightColor: 'transparent',
     });
-    document.body.appendChild(tapOverlay);
+    document.body.appendChild(touchOverlay);
 
-    function mobileTap(e: Event) {
+    const joyOuter = document.createElement('div');
+    Object.assign(joyOuter.style, {
+        position: 'fixed',
+        width: '120px',
+        height: '120px',
+        borderRadius: '50%',
+        border: '2px solid rgba(255,255,255,0.3)',
+        background: 'rgba(255,255,255,0.06)',
+        pointerEvents: 'none',
+        display: 'none',
+        zIndex: '200',
+    });
+    document.body.appendChild(joyOuter);
+
+    const joyKnob = document.createElement('div');
+    Object.assign(joyKnob.style, {
+        position: 'absolute',
+        width: '48px',
+        height: '48px',
+        borderRadius: '50%',
+        background: 'rgba(255,255,255,0.3)',
+        left: '50%',
+        top: '50%',
+        transform: 'translate(-50%, -50%)',
+        pointerEvents: 'none',
+    });
+    joyOuter.appendChild(joyKnob);
+
+    let joyTouchId: number | null = null;
+    let joyCX = 0;
+    let joyCY = 0;
+
+    const JOY_R = 70;
+    const JOY_DEAD = 14;
+    const TAP_MS = 250;
+    const TAP_PX = 18;
+
+    const tStarts = new Map<number, { x: number; y: number; t: number }>();
+
+    function doTap() {
+        if (gameState === 'starting') launchFoil();
+        else if (gameState === 'riding') input.pump = true;
+        else if (gameState === 'crashed') resetFoilState();
+    }
+
+    function setJoyInput(dx: number, dy: number) {
+        const d = Math.sqrt(dx * dx + dy * dy);
+        if (d < JOY_DEAD) {
+            input.steerX = 0;
+            input.pitchY = 0;
+            return;
+        }
+        const f = Math.min((d - JOY_DEAD) / (JOY_R - JOY_DEAD), 1);
+        input.steerX = (dx / d) * f;
+        input.pitchY = (dy / d) * f;
+    }
+
+    function posKnob(dx: number, dy: number) {
+        const d = Math.sqrt(dx * dx + dy * dy);
+        const c = Math.min(d, JOY_R);
+        const s = d > 0 ? c / d : 0;
+        joyKnob.style.transform =
+            `translate(calc(-50% + ${dx * s}px), calc(-50% + ${dy * s}px))`;
+    }
+
+    touchOverlay.addEventListener('touchstart', (e) => {
         e.preventDefault();
-        if (gameState === 'starting') {
-            launchFoil();
-        } else if (gameState === 'riding') {
-            input.pump = true;
-        } else if (gameState === 'crashed') {
-            resetFoilState();
+        for (let i = 0; i < e.changedTouches.length; i++) {
+            const t = e.changedTouches[i];
+            tStarts.set(t.identifier, {
+                x: t.clientX, y: t.clientY, t: performance.now(),
+            });
+
+            if (joyTouchId === null && t.clientY > window.innerHeight * 0.45) {
+                joyTouchId = t.identifier;
+                joyCX = t.clientX;
+                joyCY = t.clientY;
+                joyOuter.style.left = (t.clientX - 60) + 'px';
+                joyOuter.style.top = (t.clientY - 60) + 'px';
+                joyOuter.style.display = 'block';
+                joyKnob.style.transform = 'translate(-50%, -50%)';
+            }
+        }
+    }, { passive: false });
+
+    touchOverlay.addEventListener('touchmove', (e) => {
+        e.preventDefault();
+        for (let i = 0; i < e.changedTouches.length; i++) {
+            const t = e.changedTouches[i];
+            if (t.identifier === joyTouchId) {
+                const dx = t.clientX - joyCX;
+                const dy = t.clientY - joyCY;
+                posKnob(dx, dy);
+                setJoyInput(dx, dy);
+            }
+        }
+    }, { passive: false });
+
+    function onTouchEnd(e: TouchEvent) {
+        e.preventDefault();
+        for (let i = 0; i < e.changedTouches.length; i++) {
+            const t = e.changedTouches[i];
+            const s = tStarts.get(t.identifier);
+            tStarts.delete(t.identifier);
+
+            const tap = s &&
+                (performance.now() - s.t) < TAP_MS &&
+                Math.hypot(t.clientX - s.x, t.clientY - s.y) < TAP_PX;
+
+            if (t.identifier === joyTouchId) {
+                joyTouchId = null;
+                joyOuter.style.display = 'none';
+                input.steerX = 0;
+                input.pitchY = 0;
+                if (tap) doTap();
+            } else if (tap) {
+                doTap();
+            }
         }
     }
 
-    tapOverlay.addEventListener('touchend', mobileTap);
-    tapOverlay.addEventListener('click', mobileTap);
+    touchOverlay.addEventListener('touchend', onTouchEnd, { passive: false });
+    touchOverlay.addEventListener('touchcancel', onTouchEnd, { passive: false });
 }
 
 // --- LIGHTING & ENVIRONMENT ---
@@ -971,7 +1083,7 @@ function updateHUD() {
         hudTitle.textContent = '🏄 Downwind';
         hudSubtitle.textContent = 'race to 2 km · pump to stay on foil';
         if (isMobile) {
-            hudControls.textContent = 'Tap to launch';
+            hudControls.textContent = 'Tap to launch · Drag to steer';
         } else {
             hudControls.textContent = '← → Turn  ·  ↑ ↓ Pitch  ·  SPACE Pump\n\n    Press SPACE to launch';
         }
@@ -1619,12 +1731,20 @@ function updatePhysics(dt: number, time: number) {
     foilState.speed = speed;
 
     let targetRoll = 0;
-    if (input.left) targetRoll = MAX_ROLL;
-    if (input.right) targetRoll = -MAX_ROLL;
+    if (input.steerX !== 0) {
+        targetRoll = -input.steerX * MAX_ROLL;
+    } else {
+        if (input.left) targetRoll = MAX_ROLL;
+        if (input.right) targetRoll = -MAX_ROLL;
+    }
 
     let targetPitch = 0;
-    if (input.up) targetPitch = MAX_PITCH;
-    if (input.down) targetPitch = -MAX_PITCH;
+    if (input.pitchY !== 0) {
+        targetPitch = -input.pitchY * MAX_PITCH;
+    } else {
+        if (input.up) targetPitch = MAX_PITCH;
+        if (input.down) targetPitch = -MAX_PITCH;
+    }
 
     // Sample wave surface at center and both wingtips
     const wave = sampleWaveAtFoilPoints(time, PARAMS.windSpeed);
