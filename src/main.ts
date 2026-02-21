@@ -880,6 +880,7 @@ const SITTING_Y_OFFSET = -1.1;
 
 //let riderHips: THREE.Bone | null = null;
 let riderModel: THREE.Group | null = null;
+let riderLoaded = false;
 let currentAnimName = '';
 let pumpPlaying = false;
 
@@ -989,6 +990,7 @@ function triggerPumpAnim() {
                     activeAction = riderActions['surfing'];
                     currentAnimName = 'surfing';
                 }
+                riderLoaded = true;
             });
         });
     });
@@ -1081,7 +1083,9 @@ function updateHUD() {
 
     if (gameState === 'starting') {
         hudTitle.textContent = '🏄 Downwind';
-        hudSubtitle.textContent = 'race to 2 km · pump to stay on foil';
+        hudSubtitle.textContent = riderLoaded
+            ? 'race to 2 km · pump to stay on foil'
+            : 'race to 2 km · pump to stay on foil · loading rider…';
         if (isMobile) {
             hudControls.textContent = 'Tap to launch · Drag to steer';
         } else {
@@ -1859,12 +1863,16 @@ function updatePhysics(dt: number, time: number) {
     if (foilState.rideHeight <= 0.001) {
         foilState.rideHeight = 0;
         foilState.onFoil = false;
+        foilState.speed = 0;
+        foilState.velocity.set(0, 0, 0);
         gameState = 'crashed';
     }
     // Too low and too slow to recover — mast nearly submerged + below stall speed
     else if (foilState.rideHeight < 0.05 && foilState.speed < foil.stallSpeed) {
         foilState.rideHeight = 0;
         foilState.onFoil = false;
+        foilState.speed = 0;
+        foilState.velocity.set(0, 0, 0);
         gameState = 'crashed';
     }
 }
