@@ -521,9 +521,24 @@ canvas {
   color: rgba(255, 255, 255, 0.4);
 }
 
+/* ---------- GPS minimap ---------- */
+#gps-minimap {
+  position: fixed;
+  bottom: 24px;
+  left: 20px;
+  z-index: 100;
+  width: 180px;
+  height: 220px;
+  pointer-events: none;
+  border-radius: 10px;
+}
+
 /* ---------- mobile: hide desktop-only UI ---------- */
 @media (max-width: 768px), (pointer: coarse) {
   .lil-gui {
+    display: none !important;
+  }
+  #gps-minimap {
     display: none !important;
   }
 }

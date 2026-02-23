@@ -328,6 +328,7 @@ function resetFoilState() {
     clearWakeTrail();
     clearBubbles();
     resetRace();
+    resetGpsPath();
     hideFinishOverlay();
     // Reset the lateral tracking so the course re-centres on X=0
     raceTrackX = 0;
@@ -1703,6 +1704,240 @@ function updateBubbles(dt: number, time: number) {
 }
 
 
+// --- GPS MINIMAP ---
+const GPS_SAMPLE_INTERVAL = 0.15;
+const GPS_CANVAS_W = 180;
+const GPS_CANVAS_H = 220;
+const GPS_DPR = Math.min(window.devicePixelRatio, 2);
+
+const gpsCanvas = document.querySelector('#gps-minimap') as HTMLCanvasElement;
+const gpsCtx = gpsCanvas.getContext('2d')!;
+gpsCanvas.width = GPS_CANVAS_W * GPS_DPR;
+gpsCanvas.height = GPS_CANVAS_H * GPS_DPR;
+gpsCtx.scale(GPS_DPR, GPS_DPR);
+
+interface GpsPoint { x: number; z: number; speed: number; }
+const gpsPath: GpsPoint[] = [];
+let gpsStartPoint: GpsPoint | null = null;
+let lastGpsSampleTime = -1;
+
+function resetGpsPath() {
+    gpsPath.length = 0;
+    gpsStartPoint = null;
+    lastGpsSampleTime = -1;
+}
+
+function sampleGpsPoint(time: number) {
+    if (gameState === 'starting') return;
+    if (!gpsStartPoint) {
+        gpsStartPoint = { x: foilState.position.x, z: foilState.position.z, speed: 0 };
+    }
+    if (gameState !== 'riding') return;
+    if (time - lastGpsSampleTime >= GPS_SAMPLE_INTERVAL) {
+        lastGpsSampleTime = time;
+        gpsPath.push({ x: foilState.position.x, z: foilState.position.z, speed: foilState.speed * 1.944 });
+    }
+}
+
+function gpsSpeedColor(kts: number): string {
+    const lo = 16, hi = 32;
+    const t = Math.max(0, Math.min(1, (kts - lo) / (hi - lo)));
+    // red (0) → yellow (0.5) → green (1), with slight desaturation at extremes
+    const r = Math.round(t < 0.5 ? 230 : 230 - (t - 0.5) * 2 * 180);
+    const g = Math.round(t < 0.5 ? 60 + t * 2 * 180 : 240);
+    const b = Math.round(50 + (1 - Math.abs(t - 0.5) * 2) * 20);
+    return `rgba(${r},${g},${b},0.9)`;
+}
+
+function drawGpsMinimap() {
+    const w = GPS_CANVAS_W;
+    const h = GPS_CANVAS_H;
+    const pad = 14;
+    const ctx = gpsCtx;
+
+    ctx.clearRect(0, 0, w, h);
+
+    // Background
+    ctx.fillStyle = 'rgba(0, 18, 36, 0.72)';
+    ctx.beginPath();
+    ctx.roundRect(0, 0, w, h, 10);
+    ctx.fill();
+
+    // Border
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.12)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.roundRect(0.5, 0.5, w - 1, h - 1, 10);
+    ctx.stroke();
+
+    const startZ = RACE_START_Z;
+    const finishZ = RACE_START_Z + RACE_LENGTH_KM * 1000;
+    const zRange = finishZ - startZ;
+
+    // Find X extents from path
+    let minX = gpsStartPoint ? gpsStartPoint.x : foilState.position.x;
+    let maxX = minX;
+    for (const p of gpsPath) {
+        if (p.x < minX) minX = p.x;
+        if (p.x > maxX) maxX = p.x;
+    }
+    if (gameState !== 'starting') {
+        minX = Math.min(minX, foilState.position.x);
+        maxX = Math.max(maxX, foilState.position.x);
+    }
+
+    // Ensure minimum lateral spread so the trail is visible
+    const xSpread = Math.max(maxX - minX, zRange * 0.25);
+    const centerX = (minX + maxX) / 2;
+
+    const drawW = w - pad * 2;
+    const drawH = h - pad * 2;
+
+    const scaleZ = drawH / zRange;
+    const scaleX = drawW / xSpread;
+    const scale = Math.min(scaleX, scaleZ);
+
+    // Centering offsets
+    const usedW = xSpread * scale;
+    const usedH = zRange * scale;
+    const offsetX = pad + (drawW - usedW) / 2;
+    const offsetY = pad + (drawH - usedH) / 2;
+
+    // World → canvas: Z goes bottom-to-top, X mirrored so left in-game = left on map
+    const toCanvas = (wx: number, wz: number): [number, number] => {
+        const cx = offsetX + (centerX - wx + xSpread / 2) * scale;
+        const cy = offsetY + (finishZ - wz) * scale;
+        return [cx, cy];
+    };
+
+    // Distance grid lines — 250m for 1km race, 1km for longer races
+    const gridStepM = RACE_LENGTH_KM <= 1 ? 250 : 1000;
+    ctx.font = '7px monospace';
+    ctx.textAlign = 'left';
+    for (let m = gridStepM; m < RACE_LENGTH_KM * 1000; m += gridStepM) {
+        const kz = startZ + m;
+        const [lx, ly] = toCanvas(centerX - xSpread / 2, kz);
+        const [rx] = toCanvas(centerX + xSpread / 2, kz);
+        const isKm = m % 1000 === 0;
+        ctx.strokeStyle = isKm ? 'rgba(255, 255, 255, 0.2)' : 'rgba(255, 255, 255, 0.1)';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([]);
+        ctx.beginPath();
+        ctx.moveTo(lx, ly);
+        ctx.lineTo(rx, ly);
+        ctx.stroke();
+        const label = isKm ? `${m / 1000}k` : `${m / 1000}`;
+        ctx.fillStyle = isKm ? 'rgba(255, 255, 255, 0.35)' : 'rgba(255, 255, 255, 0.2)';
+        ctx.fillText(label, lx + 2, ly - 2);
+    }
+    ctx.setLineDash([]);
+
+    // Finish line (checkered dashes)
+    const [fl1, fly] = toCanvas(centerX - xSpread / 2, finishZ);
+    const [fl2] = toCanvas(centerX + xSpread / 2, finishZ);
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.55)';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([4, 3]);
+    ctx.beginPath();
+    ctx.moveTo(Math.max(pad, fl1), fly);
+    ctx.lineTo(Math.min(w - pad, fl2), fly);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.35)';
+    ctx.font = '8px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('FINISH', w / 2, fly - 4);
+
+    // Start line
+    const [sl1, sly] = toCanvas(centerX - xSpread / 2, startZ);
+    const [sl2] = toCanvas(centerX + xSpread / 2, startZ);
+    ctx.strokeStyle = 'rgba(76, 175, 80, 0.3)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(Math.max(pad, sl1), sly);
+    ctx.lineTo(Math.min(w - pad, sl2), sly);
+    ctx.stroke();
+
+    // Path trail — colored by speed (red ≤10 kts → green ≥25 kts)
+    if (gpsPath.length > 1) {
+        ctx.lineWidth = 2;
+        ctx.lineJoin = 'round';
+        ctx.lineCap = 'round';
+        for (let i = 1; i < gpsPath.length; i++) {
+            const [x0, y0] = toCanvas(gpsPath[i - 1].x, gpsPath[i - 1].z);
+            const [x1, y1] = toCanvas(gpsPath[i].x, gpsPath[i].z);
+            const kts = gpsPath[i].speed;
+            ctx.strokeStyle = gpsSpeedColor(kts);
+            ctx.beginPath();
+            ctx.moveTo(x0, y0);
+            ctx.lineTo(x1, y1);
+            ctx.stroke();
+        }
+    }
+
+    // Start dot (green)
+    if (gpsStartPoint) {
+        const [sx, sy] = toCanvas(gpsStartPoint.x, gpsStartPoint.z);
+        ctx.fillStyle = '#4caf50';
+        ctx.beginPath();
+        ctx.arc(sx, sy, 4, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(76, 175, 80, 0.4)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.arc(sx, sy, 6, 0, Math.PI * 2);
+        ctx.stroke();
+    }
+
+    // Current position dot — pulsing blue
+    if (gameState !== 'starting') {
+        const [cx, cy] = toCanvas(foilState.position.x, foilState.position.z);
+        const t = performance.now() / 1000;
+        const pulse = 0.5 + 0.5 * Math.sin(t * 3.5);
+
+        if (gameState === 'crashed') {
+            ctx.fillStyle = 'rgba(239, 83, 80, 0.25)';
+            ctx.beginPath();
+            ctx.arc(cx, cy, 7, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = '#ef5350';
+            ctx.beginPath();
+            ctx.arc(cx, cy, 3.5, 0, Math.PI * 2);
+            ctx.fill();
+        } else {
+            const outerR = 7 + pulse * 5;
+            const outerAlpha = 0.12 + pulse * 0.1;
+            ctx.fillStyle = `rgba(60, 140, 255, ${outerAlpha})`;
+            ctx.beginPath();
+            ctx.arc(cx, cy, outerR, 0, Math.PI * 2);
+            ctx.fill();
+
+            ctx.fillStyle = 'rgba(60, 140, 255, 0.3)';
+            ctx.beginPath();
+            ctx.arc(cx, cy, 6, 0, Math.PI * 2);
+            ctx.fill();
+
+            ctx.fillStyle = '#3c8cff';
+            ctx.beginPath();
+            ctx.arc(cx, cy, 3.5, 0, Math.PI * 2);
+            ctx.fill();
+
+            ctx.fillStyle = `rgba(180, 215, 255, ${0.5 + pulse * 0.5})`;
+            ctx.beginPath();
+            ctx.arc(cx, cy, 1.5, 0, Math.PI * 2);
+            ctx.fill();
+        }
+    }
+
+    // Title label
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.4)';
+    ctx.font = '9px monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText('GPS', pad, pad - 3);
+}
+
+
 // --- RACE MARKERS ---
 // All buoys and the finish gate are centred on `raceTrackX`, which smoothly
 // tracks the player's lateral (X) position.  Each buoy stores its relative
@@ -2222,6 +2457,10 @@ function animate() {
         finishGate.position.x = raceTrackX;
         finishGate.position.y = getWaterHeightFast(raceTrackX, FINISH_Z, time, ws);
     }
+
+    // GPS minimap
+    sampleGpsPoint(time);
+    drawGpsMinimap();
 
     // Wake trail
     updateWakeTrail(dt, time);
