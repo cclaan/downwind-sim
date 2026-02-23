@@ -193,6 +193,7 @@ function fmtTime(seconds: number): string {
 
 // --- GLOBAL LEADERBOARD (App Engine Datastore) ---
 const API_BASE = '/downwind-sim/api';
+const IS_LOCAL = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
 
 interface LeaderboardEntry {
     name: string;
@@ -200,6 +201,19 @@ interface LeaderboardEntry {
     date: string;
     foil: string;
 }
+
+const MOCK_LEADERBOARD: LeaderboardEntry[] = [
+    { name: 'WaveDave', time: 52.3, date: '', foil: 'High Aspect Race' },
+    { name: 'FoilQueen', time: 55.8, date: '', foil: 'High Aspect Race' },
+    { name: 'BumpRider', time: 58.1, date: '', foil: 'Mid Aspect Cruise' },
+    { name: 'GlideKing', time: 61.4, date: '', foil: 'High Aspect Race' },
+    { name: 'OceanAce', time: 64.7, date: '', foil: 'High Aspect Race' },
+    { name: 'WindChaser', time: 67.2, date: '', foil: 'Mid Aspect Cruise' },
+    { name: 'SwellHunter', time: 70.0, date: '', foil: 'High Aspect Race' },
+    { name: 'TideRunner', time: 73.5, date: '', foil: 'Mid Aspect Cruise' },
+    { name: 'ReefPilot', time: 76.9, date: '', foil: 'High Aspect Race' },
+    { name: 'FoamChaser', time: 80.1, date: '', foil: 'Mid Aspect Cruise' },
+];
 
 function getStoredPlayerName(): string {
     try { return localStorage.getItem('downwind-player-name') || ''; } catch { return ''; }
@@ -210,6 +224,7 @@ function setStoredPlayerName(name: string) {
 }
 
 async function fetchLeaderboard(km: number): Promise<LeaderboardEntry[]> {
+    if (IS_LOCAL) return MOCK_LEADERBOARD;
     try {
         const res = await fetch(`${API_BASE}/scores?km=${km}`);
         if (!res.ok) return [];
@@ -223,6 +238,10 @@ async function fetchLeaderboard(km: number): Promise<LeaderboardEntry[]> {
 async function submitScore(
     km: number, time: number, name: string, foil: string
 ): Promise<{ rank: number; isNew: boolean }> {
+    if (IS_LOCAL) {
+        console.log('[DEV] submitScore:', { km, time, name, foil });
+        return { rank: 1, isNew: true };
+    }
     try {
         const res = await fetch(`${API_BASE}/scores`, {
             method: 'POST',
@@ -1110,7 +1129,7 @@ function updateHUD() {
         if (isMobile) {
             hudControls.textContent = 'Tap to launch · Drag to steer';
         } else {
-            hudControls.textContent = '← → Turn  ·  ↑ ↓ Pitch  ·  SPACE Pump\n\n    Press SPACE to launch';
+            hudControls.textContent = '← → Turn  ·  ↑ ↓ Pitch  ·  SPACE Pump\n\n    Press SPACE to launch?';
         }
         hudLeaderboard.innerHTML = cachedTop3HTML;
         hudLeaderboard.style.display = cachedTop3HTML ? '' : 'none';
