@@ -518,6 +518,80 @@ function updateEnvironment() {
 
 updateEnvironment();
 
+// --- PRE-BAKED NOISE TEXTURE ---
+const NOISE_SIZE = 512;
+const NOISE_GRID_PERIOD = 8;
+
+function generateNoiseTexture(size: number, gridPeriod: number): THREE.DataTexture {
+    const perm = new Uint8Array(256);
+    for (let i = 0; i < 256; i++) perm[i] = i;
+    let seed = 42;
+    const rand = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
+    for (let i = 255; i > 0; i--) {
+        const j = Math.floor(rand() * (i + 1));
+        [perm[i], perm[j]] = [perm[j], perm[i]];
+    }
+    const p = new Uint16Array(512);
+    for (let i = 0; i < 512; i++) p[i] = perm[i & 255];
+
+    const GRAD: [number, number][] = [
+        [1,1],[-1,1],[1,-1],[-1,-1],[1,0],[-1,0],[0,1],[0,-1]
+    ];
+
+    function fade(t: number) { return t * t * t * (t * (t * 6 - 15) + 10); }
+
+    function perlin(x: number, y: number, period: number): number {
+        const xi = Math.floor(x), yi = Math.floor(y);
+        const xf = x - xi, yf = y - yi;
+        const x0 = ((xi % period) + period) % period;
+        const x1 = ((xi + 1) % period + period) % period;
+        const y0 = ((yi % period) + period) % period;
+        const y1 = ((yi + 1) % period + period) % period;
+        const u = fade(xf), v = fade(yf);
+        const dot = (h: number, fx: number, fy: number) => { const g = GRAD[h & 7]; return g[0]*fx + g[1]*fy; };
+        const aa = p[p[x0]+y0], ab = p[p[x0]+y1], ba = p[p[x1]+y0], bb = p[p[x1]+y1];
+        return (1-v) * ((1-u)*dot(aa,xf,yf) + u*dot(ba,xf-1,yf)) +
+                  v  * ((1-u)*dot(ab,xf,yf-1) + u*dot(bb,xf-1,yf-1));
+    }
+
+    function fbm(x: number, y: number): number {
+        let f = 0, freq = 1;
+        const amps = [0.5, 0.25, 0.125, 0.0625];
+        for (let i = 0; i < 4; i++) {
+            f += amps[i] * perlin(x * freq, y * freq, gridPeriod * freq);
+            freq *= 2;
+        }
+        return f;
+    }
+
+    const values = new Float32Array(size * size);
+    for (let j = 0; j < size; j++)
+        for (let i = 0; i < size; i++)
+            values[j * size + i] = fbm((i / size) * gridPeriod, (j / size) * gridPeriod);
+
+    const texelSize = gridPeriod / size;
+    const data = new Float32Array(size * size * 4);
+    for (let j = 0; j < size; j++) {
+        for (let i = 0; i < size; i++) {
+            const idx = j * size + i;
+            const dx = (values[j*size + (i+1)%size] - values[j*size + (i-1+size)%size]) / (2 * texelSize);
+            const dy = (values[((j+1)%size)*size + i] - values[((j-1+size)%size)*size + i]) / (2 * texelSize);
+            data[idx*4]   = values[idx];
+            data[idx*4+1] = dx;
+            data[idx*4+2] = dy;
+            data[idx*4+3] = 1;
+        }
+    }
+
+    const tex = new THREE.DataTexture(data, size, size, THREE.RGBAFormat, THREE.FloatType);
+    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+    tex.magFilter = tex.minFilter = THREE.LinearFilter;
+    tex.needsUpdate = true;
+    return tex;
+}
+
+const noiseTexture = generateNoiseTexture(NOISE_SIZE, NOISE_GRID_PERIOD);
+
 // --- WATER SHADER ---
 const waterGeometry = new THREE.PlaneGeometry(1500, 2000, 512, 512);
 waterGeometry.rotateX(-Math.PI / 2);
@@ -534,12 +608,16 @@ const waterUniforms = {
     uTime: { value: 0 },
     uWindSpeed: { value: PARAMS.windSpeed },
     uWorldOffset: { value: new THREE.Vector2(0, 0) },
+    uNoiseTexture: { value: noiseTexture },
+    uNoisePeriod: { value: NOISE_GRID_PERIOD },
 };
 
 waterMaterial.onBeforeCompile = (shader) => {
     shader.uniforms.uTime = waterUniforms.uTime;
     shader.uniforms.uWindSpeed = waterUniforms.uWindSpeed;
     shader.uniforms.uWorldOffset = waterUniforms.uWorldOffset;
+    shader.uniforms.uNoiseTexture = waterUniforms.uNoiseTexture;
+    shader.uniforms.uNoisePeriod = waterUniforms.uNoisePeriod;
 
     shader.vertexShader = `
         uniform float uTime;
@@ -627,128 +705,42 @@ waterMaterial.onBeforeCompile = (shader) => {
     shader.fragmentShader = `
         uniform float uTime;
         uniform float uWindSpeed;
+        uniform sampler2D uNoiseTexture;
+        uniform float uNoisePeriod;
 
         varying vec3 vGridPos;
         varying vec3 vViewTangent;
         varying vec3 vViewBinormal;
-
-        vec3 permute(vec3 x) { return mod(((x*34.0)+1.0)*x, 289.0); }
-
-        float snoise(vec2 v) {
-            const vec4 C = vec4(0.211324865405187, 0.366025403784439,
-                                -0.577350269189626, 0.024390243902439);
-            vec2 i  = floor(v + dot(v, C.yy));
-            vec2 x0 = v -   i + dot(i, C.xx);
-            vec2 i1 = (x0.x > x0.y) ? vec2(1.0, 0.0) : vec2(0.0, 1.0);
-            vec4 x12 = x0.xyxy + C.xxzz;
-            x12.xy -= i1;
-            i = mod(i, 289.0);
-            vec3 p = permute(permute(i.y + vec3(0.0, i1.y, 1.0)) + i.x + vec3(0.0, i1.x, 1.0));
-            vec3 m = max(0.5 - vec3(dot(x0,x0), dot(x12.xy,x12.xy), dot(x12.zw,x12.zw)), 0.0);
-            m = m*m;
-            m = m*m;
-            vec3 x = 2.0 * fract(p * C.www) - 1.0;
-            vec3 h = abs(x) - 0.5;
-            vec3 ox = floor(x + 0.5);
-            vec3 a0 = x - ox;
-            m *= 1.79284291400159 - 0.85373472095314 * (a0*a0 + h*h);
-            vec3 g;
-            g.x  = a0.x  * x0.x  + h.x  * x0.y;
-            g.yz = a0.yz * x12.xz + h.yz * x12.yw;
-            return 130.0 * dot(m, g);
-        }
-
-        float fbm(vec2 p) {
-            float f = 0.0;
-            f += 0.5000 * snoise(p); p *= 2.02;
-            f += 0.2500 * snoise(p); p *= 2.03;
-            f += 0.1250 * snoise(p); p *= 2.01;
-            f += 0.0625 * snoise(p);
-            return f;
-        }
     ` + shader.fragmentShader;
 
     const fwidth_shader = `
         #include <normal_fragment_begin>
 
+        float invPeriod = 1.0 / uNoisePeriod;
         float rippleTime = uTime * 1.05;
         vec2 rippleUv = vGridPos.xz * 0.4 - vec2(0.1, 0.8) * rippleTime;
 
         float ripplePx = length(fwidth(rippleUv));
         float rippleFade = 1.0 / (1.0 + ripplePx * 2.0);
 
-        float eps = 0.01;
-        float n0 = fbm(rippleUv);
-        float nx = fbm(rippleUv + vec2(eps, 0.0));
-        float nz = fbm(rippleUv + vec2(0.0, eps));
-
-        float rAmp = 0.12 * uWindSpeed * rippleFade;
-        float ddx_r = (nx - n0) / eps * 0.4 * rAmp;
-        float ddz_r = (nz - n0) / eps * 0.4 * rAmp;
+        vec3 rippleN = texture2D(uNoiseTexture, rippleUv * invPeriod).rgb;
+        float rAmp = 0.319 * uWindSpeed * rippleFade;
+        float ddx_r = rippleN.g * 0.4 * rAmp;
+        float ddz_r = rippleN.b * 0.4 * rAmp;
 
         vec2 microUv = vGridPos.xz * 1.8 - vec2(0.15, 0.9) * rippleTime * 1.2;
 
         float microPx = length(fwidth(microUv));
         float microFade = 1.0 / (1.0 + microPx * 15.0);
 
-        float m0 = fbm(microUv);
-        float mx = fbm(microUv + vec2(eps, 0.0));
-        float mz = fbm(microUv + vec2(0.0, eps));
-
-        float mAmp = 0.03 * uWindSpeed * microFade;
-        ddx_r += (mx - m0) / eps * 1.8 * mAmp;
-        ddz_r += (mz - m0) / eps * 1.8 * mAmp;
+        vec3 microN = texture2D(uNoiseTexture, microUv * invPeriod).rgb;
+        float mAmp = 0.079 * uWindSpeed * microFade;
+        ddx_r += microN.g * 1.8 * mAmp;
+        ddz_r += microN.b * 1.8 * mAmp;
 
         normal = normalize(normal - ddx_r * vViewTangent - ddz_r * vViewBinormal);
     `;
 
-    // const msaa_shader = `
-    //     #include <normal_fragment_begin>
-
-    //     float rippleTime = uTime * 1.05;
-    //     vec2 rippleUv = vGridPos.xz * 0.4 - vec2(0.1, 0.8) * rippleTime;
-    //     vec2 microUv  = vGridPos.xz * 1.8 - vec2(0.15, 0.9) * rippleTime * 1.2;
-
-    //     vec2 dRipple_dx = dFdx(rippleUv);
-    //     vec2 dRipple_dy = dFdy(rippleUv);
-    //     vec2 dMicro_dx  = dFdx(microUv);
-    //     vec2 dMicro_dy  = dFdy(microUv);
-
-    //     float rAmp = 0.12 * uWindSpeed;
-    //     float mAmp = 0.03 * uWindSpeed;
-    //     float eps  = 0.01;
-
-    //     float ddx_r = 0.0;
-    //     float ddz_r = 0.0;
-
-    //     vec2 ssOff0 = vec2(-0.125, -0.375);
-    //     vec2 ssOff1 = vec2( 0.375, -0.125);
-    //     vec2 ssOff2 = vec2(-0.375,  0.125);
-    //     vec2 ssOff3 = vec2( 0.125,  0.375);
-
-    //     for (int s = 0; s < 4; s++) {
-    //         vec2 jit = (s == 0) ? ssOff0 : (s == 1) ? ssOff1 : (s == 2) ? ssOff2 : ssOff3;
-
-    //         vec2 rUv = rippleUv + jit.x * dRipple_dx + jit.y * dRipple_dy;
-    //         float rn0 = fbm(rUv);
-    //         float rnx = fbm(rUv + vec2(eps, 0.0));
-    //         float rnz = fbm(rUv + vec2(0.0, eps));
-    //         ddx_r += (rnx - rn0) / eps * 0.4 * rAmp;
-    //         ddz_r += (rnz - rn0) / eps * 0.4 * rAmp;
-
-    //         vec2 mUv = microUv + jit.x * dMicro_dx + jit.y * dMicro_dy;
-    //         float mn0 = fbm(mUv);
-    //         float mnx = fbm(mUv + vec2(eps, 0.0));
-    //         float mnz = fbm(mUv + vec2(0.0, eps));
-    //         ddx_r += (mnx - mn0) / eps * 1.8 * mAmp;
-    //         ddz_r += (mnz - mn0) / eps * 1.8 * mAmp;
-    //     }
-
-    //     ddx_r *= 0.25;
-    //     ddz_r *= 0.25;
-
-    //     normal = normalize(normal - ddx_r * vViewTangent - ddz_r * vViewBinormal);
-    // `;
 
     shader.fragmentShader = shader.fragmentShader.replace(
         '#include <normal_fragment_begin>',
