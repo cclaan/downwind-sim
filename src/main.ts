@@ -191,46 +191,74 @@ function fmtTime(seconds: number): string {
     return `${m}:${s.toFixed(1).padStart(4, '0')}`;
 }
 
-// --- HIGH SCORES (localStorage) ---
-const HIGH_SCORE_MAX = 3;
+// --- GLOBAL LEADERBOARD (App Engine Datastore) ---
+const API_BASE = '/downwind-sim/api';
 
-interface HighScoreEntry {
+interface LeaderboardEntry {
+    name: string;
     time: number;
-    date: string; // ISO date string
+    date: string;
+    foil: string;
 }
 
-function highScoreKey(km: number): string {
-    return `downwind-highscores-${km}km`;
+function getStoredPlayerName(): string {
+    try { return localStorage.getItem('downwind-player-name') || ''; } catch { return ''; }
 }
 
-function loadHighScores(km: number): HighScoreEntry[] {
+function setStoredPlayerName(name: string) {
+    try { localStorage.setItem('downwind-player-name', name); } catch { /* ignore */ }
+}
+
+async function fetchLeaderboard(km: number): Promise<LeaderboardEntry[]> {
     try {
-        const raw = localStorage.getItem(highScoreKey(km));
-        if (!raw) return [];
-        const parsed = JSON.parse(raw);
-        if (!Array.isArray(parsed)) return [];
-        return parsed
-            .filter((e: any) => typeof e.time === 'number' && typeof e.date === 'string')
-            .sort((a: HighScoreEntry, b: HighScoreEntry) => a.time - b.time)
-            .slice(0, HIGH_SCORE_MAX);
+        const res = await fetch(`${API_BASE}/scores?km=${km}`);
+        if (!res.ok) return [];
+        const data = await res.json();
+        return data.scores || [];
     } catch {
         return [];
     }
 }
 
-function saveHighScore(km: number, time: number): { rank: number; isNew: boolean } {
-    const scores = loadHighScores(km);
-    const entry: HighScoreEntry = { time, date: new Date().toISOString() };
-    scores.push(entry);
-    scores.sort((a, b) => a.time - b.time);
-    const rank = scores.findIndex(e => e === entry) + 1;
-    const trimmed = scores.slice(0, HIGH_SCORE_MAX);
-    const isNew = rank <= HIGH_SCORE_MAX;
+async function submitScore(
+    km: number, time: number, name: string, foil: string
+): Promise<{ rank: number; isNew: boolean }> {
     try {
-        localStorage.setItem(highScoreKey(km), JSON.stringify(trimmed));
-    } catch { /* quota exceeded — silently ignore */ }
-    return { rank, isNew };
+        const res = await fetch(`${API_BASE}/scores`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ km, time, name, foil }),
+        });
+        if (!res.ok) return { rank: 0, isNew: false };
+        return await res.json();
+    } catch {
+        return { rank: 0, isNew: false };
+    }
 }
+
+let scoreSubmitted = false;
+
+let cachedTop3HTML = '';
+
+async function refreshStartScreenLeaderboard() {
+    const scores = await fetchLeaderboard(RACE_LENGTH_KM);
+    const limit = isMobile ? 5 : 10;
+    const top = scores.slice(0, limit);
+    if (top.length === 0) {
+        cachedTop3HTML = '';
+        return;
+    }
+    const medals = ['🥇', '🥈', '🥉'];
+    let html = `<div class="hud-lb-title">TOP TIMES — ${RACE_LENGTH_KM} km</div>`;
+    for (let i = 0; i < top.length; i++) {
+        const s = top[i];
+        const rank = medals[i] || `${i + 1}.`;
+        html += `<div class="hud-lb-row"><span class="hud-lb-rank">${rank}</span> ${escapeHTML(s.name)} <span class="hud-lb-time">${fmtTime(s.time)}</span></div>`;
+    }
+    cachedTop3HTML = html;
+}
+
+refreshStartScreenLeaderboard();
 
 // --- INPUT STATE ---
 const input = {
@@ -383,8 +411,8 @@ if (isMobile) {
 
     function doTap() {
         if (gameState === 'starting') launchFoil();
-        else if (gameState === 'riding') input.pump = true;
-        else if (gameState === 'crashed') resetFoilState();
+        else if (gameState === 'riding' && !race.finished) input.pump = true;
+        else if (gameState === 'crashed' || race.finished) resetFoilState();
     }
 
     function setJoyInput(dx: number, dy: number) {
@@ -1045,6 +1073,7 @@ const hudEnergyFill = document.querySelector('#energy-bar-fill') as HTMLElement;
 const hudTitle = document.querySelector('#hud-title') as HTMLElement;
 const hudSubtitle = document.querySelector('#hud-subtitle') as HTMLElement;
 const hudControls = document.querySelector('#hud-controls') as HTMLElement;
+const hudLeaderboard = document.querySelector('#hud-leaderboard') as HTMLElement;
 
 const distanceContainer = document.querySelector('#distance-container') as HTMLElement;
 const distanceLabel = document.querySelector('#distance-label') as HTMLElement;
@@ -1083,14 +1112,18 @@ function updateHUD() {
         } else {
             hudControls.textContent = '← → Turn  ·  ↑ ↓ Pitch  ·  SPACE Pump\n\n    Press SPACE to launch';
         }
+        hudLeaderboard.innerHTML = cachedTop3HTML;
+        hudLeaderboard.style.display = cachedTop3HTML ? '' : 'none';
     } else if (gameState === 'crashed') {
         hudTitle.textContent = 'Off Foil!';
         hudSubtitle.textContent = '';
         hudControls.textContent = isMobile ? 'Tap to restart' : 'Press R to restart';
+        hudLeaderboard.style.display = 'none';
     } else {
         hudTitle.textContent = '';
         hudSubtitle.textContent = '';
         hudControls.textContent = '';
+        hudLeaderboard.style.display = 'none';
     }
 }
 
@@ -1109,19 +1142,41 @@ for (let k = 1; k <= RACE_LENGTH_KM; k++) {
     kmTickRow.appendChild(tick);
 }
 
+function renderLeaderboardHTML(
+    scores: LeaderboardEntry[], highlightTime?: number, highlightName?: string
+): string {
+    if (scores.length === 0) return '';
+    const medals = ['🥇', '🥈', '🥉'];
+    let html = `<div class="finish-highscores">`;
+    html += `<div class="finish-highscores-title">GLOBAL LEADERBOARD — ${RACE_LENGTH_KM} km</div>`;
+    let highlighted = false;
+    for (let i = 0; i < scores.length; i++) {
+        const s = scores[i];
+        const isCurrent = !highlighted && highlightName && highlightTime !== undefined
+            && s.name === highlightName && Math.abs(s.time - highlightTime) < 0.05;
+        if (isCurrent) highlighted = true;
+        const cls = isCurrent ? 'finish-hs-row finish-hs-row--current' : 'finish-hs-row';
+        html += `<div class="${cls}">` +
+            `<span class="finish-hs-rank">${medals[i] || (i + 1)}</span>` +
+            `<span class="finish-hs-name">${escapeHTML(s.name)}</span>` +
+            `<span class="finish-hs-time">${fmtTime(s.time)}</span>` +
+            `</div>`;
+    }
+    html += `</div>`;
+    return html;
+}
+
+function escapeHTML(s: string): string {
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
 function showRaceResults() {
+    scoreSubmitted = false;
     const total = race.totalElapsed;
+    const roundedTotal = Math.round(total * 100) / 100;
     const avgPerKm = total / RACE_LENGTH_KM;
 
-    const { rank, isNew } = saveHighScore(RACE_LENGTH_KM, total);
-    const scores = loadHighScores(RACE_LENGTH_KM);
-
     let html = `<div class="finish-title">RACE COMPLETE</div>`;
-    if (isNew && rank === 1) {
-        html += `<div class="finish-newbest">NEW BEST!</div>`;
-    } else if (isNew) {
-        html += `<div class="finish-newbest finish-newbest--top3">TOP ${rank}!</div>`;
-    }
     html += `<div class="finish-total">Total&nbsp; <span class="finish-total-time">${fmtTime(total)}</span></div>`;
     html += `<div class="finish-splits">`;
 
@@ -1137,29 +1192,71 @@ function showRaceResults() {
     html += `</div>`;
     html += `<div class="finish-avg">Avg / km &nbsp;<span class="finish-avg-time">${fmtTime(avgPerKm)}</span></div>`;
 
-    if (scores.length > 0) {
-        html += `<div class="finish-highscores">`;
-        html += `<div class="finish-highscores-title">BEST TIMES — ${RACE_LENGTH_KM} km</div>`;
-        const medals = ['🥇', '🥈', '🥉'];
-        for (let i = 0; i < scores.length; i++) {
-            const isCurrent = scores[i].time === total && i === rank - 1;
-            const rowClass = isCurrent ? 'finish-hs-row finish-hs-row--current' : 'finish-hs-row';
-            html += `<div class="${rowClass}">` +
-                `<span class="finish-hs-rank">${medals[i] || (i + 1)}</span>` +
-                `<span class="finish-hs-time">${fmtTime(scores[i].time)}</span>` +
-                `</div>`;
-        }
-        html += `</div>`;
-    }
+    html += `<div id="finish-submit-section" class="finish-submit">` +
+        `<input type="text" id="finish-name-input" placeholder="Your name" maxlength="20" ` +
+        `value="${escapeHTML(getStoredPlayerName())}" />` +
+        `<button id="finish-submit-btn">Submit Score</button>` +
+        `</div>`;
+    html += `<div id="finish-submit-status"></div>`;
+
+    html += `<div id="finish-leaderboard-slot">` +
+        `<div class="finish-loading">Loading leaderboard…</div></div>`;
 
     html += `<div class="finish-hint">Press R to restart</div>`;
 
     finishOverlay.innerHTML = html;
     finishOverlay.style.display = 'block';
+    finishOverlay.style.pointerEvents = 'auto';
+
+    const nameInput = document.getElementById('finish-name-input') as HTMLInputElement;
+    const submitBtn = document.getElementById('finish-submit-btn') as HTMLButtonElement;
+    const statusEl = document.getElementById('finish-submit-status')!;
+    const lbSlot = document.getElementById('finish-leaderboard-slot')!;
+
+    fetchLeaderboard(RACE_LENGTH_KM).then(scores => {
+        lbSlot.innerHTML = renderLeaderboardHTML(scores);
+    });
+
+    submitBtn.addEventListener('click', async () => {
+        if (scoreSubmitted) return;
+        const name = nameInput.value.trim().slice(0, 20) || 'Anon';
+        setStoredPlayerName(name);
+        submitBtn.disabled = true;
+        submitBtn.textContent = 'Submitting…';
+        statusEl.textContent = '';
+
+        const result = await submitScore(RACE_LENGTH_KM, roundedTotal, name, activeFoil.name);
+        scoreSubmitted = true;
+
+        if (result.rank > 0 && result.isNew) {
+            statusEl.innerHTML = `<span class="finish-newbest">#${result.rank} on the leaderboard!</span>`;
+        } else if (result.rank > 0) {
+            statusEl.textContent = 'Score submitted!';
+        } else {
+            statusEl.textContent = 'Could not submit — try again later.';
+            scoreSubmitted = false;
+            submitBtn.disabled = false;
+            submitBtn.textContent = 'Submit Score';
+            return;
+        }
+
+        submitBtn.textContent = 'Submitted ✓';
+
+        const refreshed = await fetchLeaderboard(RACE_LENGTH_KM);
+        lbSlot.innerHTML = renderLeaderboardHTML(refreshed, roundedTotal, name);
+        refreshStartScreenLeaderboard();
+    });
+
+    nameInput.addEventListener('keydown', (e) => {
+        e.stopPropagation();
+        if (e.key === 'Enter') submitBtn.click();
+    });
 }
 
 function hideFinishOverlay() {
     finishOverlay.style.display = 'none';
+    finishOverlay.style.pointerEvents = 'none';
+    scoreSubmitted = false;
 }
 
 function updateRaceHUD() {
@@ -1678,7 +1775,13 @@ finishGate.add(rod);
 
 
 // --- INPUT SYSTEM ---
+function isTypingInInput(): boolean {
+    const el = document.activeElement;
+    return !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA');
+}
+
 window.addEventListener('keydown', (e) => {
+    if (isTypingInInput()) return;
     switch (e.code) {
         case 'ArrowLeft': input.left = true; break;
         case 'ArrowRight': input.right = true; break;
@@ -1693,7 +1796,7 @@ window.addEventListener('keydown', (e) => {
             }
             break;
         case 'KeyR':
-            if (gameState === 'crashed') {
+            if (gameState === 'crashed' || race.finished) {
                 resetFoilState();
             }
             break;
