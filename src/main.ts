@@ -72,7 +72,7 @@ const FOIL_PRESETS: Record<string, FoilConfig> = {
 let activeFoil: FoilConfig = { ...FOIL_PRESETS['High Aspect Race'] };
 
 // --- RACE CONFIGURATION ---
-const RACE_LENGTH_KM = 1; // total race distance — adjust to change level length
+let RACE_LENGTH_KM = 1; // total race distance — changed via intro HUD picker
 const RACE_START_Z = SPAWN_POINT.z; // player starts here; race km marks are at RACE_START_Z + k*1000
 
 // Returns how far the player has travelled directly downwind (Z-axis progress).
@@ -1093,6 +1093,19 @@ const hudTitle = document.querySelector('#hud-title') as HTMLElement;
 const hudSubtitle = document.querySelector('#hud-subtitle') as HTMLElement;
 const hudControls = document.querySelector('#hud-controls') as HTMLElement;
 const hudLeaderboard = document.querySelector('#hud-leaderboard') as HTMLElement;
+const raceDistancePicker = document.querySelector('#race-distance-picker') as HTMLElement;
+const distBtns = raceDistancePicker.querySelectorAll<HTMLButtonElement>('.dist-btn');
+
+distBtns.forEach(btn => {
+    btn.addEventListener('click', () => {
+        const km = Number(btn.dataset.km);
+        if (km === RACE_LENGTH_KM) return;
+        RACE_LENGTH_KM = km;
+        rebuildRaceCourse();
+        distBtns.forEach(b => b.classList.toggle('dist-btn--active', b === btn));
+        refreshStartScreenLeaderboard();
+    });
+});
 
 const distanceContainer = document.querySelector('#distance-container') as HTMLElement;
 const distanceLabel = document.querySelector('#distance-label') as HTMLElement;
@@ -1124,8 +1137,9 @@ function updateHUD() {
     if (gameState === 'starting') {
         hudTitle.textContent = '🏄 Downwind';
         hudSubtitle.textContent = riderLoaded
-            ? 'race to 2 km · pump to stay on foil'
-            : 'race to 2 km · pump to stay on foil · loading rider…';
+            ? `race to ${RACE_LENGTH_KM} km · pump to stay on foil`
+            : `race to ${RACE_LENGTH_KM} km · pump to stay on foil · loading rider…`;
+        raceDistancePicker.style.display = 'flex';
         if (isMobile) {
             hudControls.textContent = 'Tap to launch · Drag to steer';
         } else {
@@ -1137,11 +1151,13 @@ function updateHUD() {
         hudTitle.textContent = 'Off Foil!';
         hudSubtitle.textContent = '';
         hudControls.textContent = isMobile ? 'Tap to restart' : 'Press R to restart';
+        raceDistancePicker.style.display = 'none';
         hudLeaderboard.style.display = 'none';
     } else {
         hudTitle.textContent = '';
         hudSubtitle.textContent = '';
         hudControls.textContent = '';
+        raceDistancePicker.style.display = 'none';
         hudLeaderboard.style.display = 'none';
     }
 }
@@ -1741,7 +1757,7 @@ for (let km = 1; km <= RACE_LENGTH_KM; km++) {
 }
 
 // Finish gate — two tall orange poles with a checkered crossbar
-const FINISH_Z = RACE_START_Z + RACE_LENGTH_KM * 1000;
+let FINISH_Z = RACE_START_Z + RACE_LENGTH_KM * 1000;
 const finishGate = new THREE.Group();
 finishGate.position.set(0, 0, FINISH_Z);
 scene.add(finishGate);
@@ -1791,6 +1807,35 @@ rod.position.set(0, crossBarY, -0.3);
 finishGate.add(rod);
 
 // finishGate X is driven by raceTrackX (set to 0 initially)
+
+function rebuildRaceCourse() {
+    // Remove old buoys
+    for (const buoy of raceBuoys) scene.remove(buoy.group);
+    raceBuoys.length = 0;
+
+    // Spawn new buoys
+    for (let km = 1; km <= RACE_LENGTH_KM; km++) {
+        const z = RACE_START_Z + km * 1000;
+        for (let i = 0; i < BUOY_REL_X.length; i++) {
+            const buoyGroup = createBuoyMesh(i % 2 === 0);
+            buoyGroup.position.set(BUOY_REL_X[i], 0, z);
+            scene.add(buoyGroup);
+            raceBuoys.push({ group: buoyGroup, relativeX: BUOY_REL_X[i], baseZ: z });
+        }
+    }
+
+    // Move finish gate
+    FINISH_Z = RACE_START_Z + RACE_LENGTH_KM * 1000;
+    finishGate.position.z = FINISH_Z;
+
+    // Rebuild km tick marks
+    kmTickRow.innerHTML = '';
+    for (let k = 1; k <= RACE_LENGTH_KM; k++) {
+        const tick = document.createElement('span');
+        tick.textContent = `${k}km`;
+        kmTickRow.appendChild(tick);
+    }
+}
 
 
 // --- INPUT SYSTEM ---

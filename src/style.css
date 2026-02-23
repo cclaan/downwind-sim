@@ -138,6 +138,42 @@ canvas {
   margin-bottom: 18px;
 }
 
+#race-distance-picker {
+  display: none;
+  justify-content: center;
+  gap: 8px;
+  margin-bottom: 14px;
+  pointer-events: auto;
+}
+
+.dist-btn {
+  font-family: monospace;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  padding: 6px 18px;
+  border: 2px solid rgba(255, 255, 255, 0.5);
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.35);
+  color: rgba(255, 255, 255, 0.7);
+  cursor: pointer;
+  backdrop-filter: blur(4px);
+  transition: all 0.15s ease;
+}
+
+.dist-btn:hover {
+  background: rgba(255, 255, 255, 0.15);
+  border-color: rgba(255, 255, 255, 0.7);
+  color: #fff;
+}
+
+.dist-btn--active {
+  background: rgba(79, 195, 247, 0.35);
+  border-color: #4fc3f7;
+  color: #fff;
+  box-shadow: 0 0 12px rgba(79, 195, 247, 0.4);
+}
+
 #hud-controls {
   font-family: monospace;
   font-size: 15px;
