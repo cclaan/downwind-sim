@@ -29,7 +29,6 @@ const PARAMS = {
     showWireframe: false,
     selectedFoil: 'High Aspect Race',
     chaseCamera: true,
-    energyOrbs: false,
 };
 
 // --- FOIL CONFIGURATION ---
@@ -330,7 +329,6 @@ function resetFoilState() {
     clearBubbles();
     resetRace();
     resetGpsPath();
-    resetEnergyOrbs();
     hideFinishOverlay();
     // Reset the lateral tracking so the course re-centres on X=0
     raceTrackX = 0;
@@ -1944,207 +1942,6 @@ function drawGpsMinimap() {
 }
 
 
-// --- ENERGY ORBS ---
-const ORB_COLLECT_RADIUS = 8;
-const ORB_SPAWN_AHEAD_MIN = 300;
-const ORB_SPAWN_AHEAD_MAX = 500;
-const ORB_LATERAL_SCATTER = 40;
-const ORB_DESPAWN_BEHIND = 100;
-const ORB_SPEED_BOOST = PUMP_IMPULSE * 1.2;
-const ORB_FLOAT_HEIGHT = 3.0;
-const ORB_SPAWN_INTERVAL_Z = 400;
-const ORB_MAX_ACTIVE = 8;
-
-interface EnergyOrb {
-    mesh: THREE.Group;
-    position: THREE.Vector3;
-    alive: boolean;
-    collected: boolean;
-    collectTimer: number;
-}
-
-const energyOrbs: EnergyOrb[] = [];
-let nextOrbSpawnZ = 0;
-
-const orbCoreMat = new THREE.MeshBasicMaterial({
-    color: 0x44ffaa,
-    transparent: true,
-    opacity: 0.95,
-});
-const orbGlowMat = new THREE.MeshBasicMaterial({
-    color: 0x00ffcc,
-    transparent: true,
-    opacity: 0.25,
-    blending: THREE.AdditiveBlending,
-    depthWrite: false,
-    side: THREE.DoubleSide,
-});
-const orbOuterMat = new THREE.MeshBasicMaterial({
-    color: 0x88ffdd,
-    transparent: true,
-    opacity: 0.08,
-    blending: THREE.AdditiveBlending,
-    depthWrite: false,
-    side: THREE.DoubleSide,
-});
-
-const orbCoreGeo = new THREE.IcosahedronGeometry(0.6, 2);
-const orbGlowGeo = new THREE.IcosahedronGeometry(1.8, 1);
-const orbOuterGeo = new THREE.IcosahedronGeometry(3.5, 1);
-
-function createOrbMesh(): THREE.Group {
-    const g = new THREE.Group();
-
-    const core = new THREE.Mesh(orbCoreGeo, orbCoreMat.clone());
-    core.name = 'core';
-    g.add(core);
-
-    const glow = new THREE.Mesh(orbGlowGeo, orbGlowMat.clone());
-    glow.name = 'glow';
-    g.add(glow);
-
-    const outer = new THREE.Mesh(orbOuterGeo, orbOuterMat.clone());
-    outer.name = 'outer';
-    g.add(outer);
-
-    const light = new THREE.PointLight(0x44ffcc, 15, 30, 2);
-    light.name = 'light';
-    g.add(light);
-
-    g.visible = false;
-    scene.add(g);
-    return g;
-}
-
-for (let i = 0; i < ORB_MAX_ACTIVE; i++) {
-    energyOrbs.push({
-        mesh: createOrbMesh(),
-        position: new THREE.Vector3(),
-        alive: false,
-        collected: false,
-        collectTimer: 0,
-    });
-}
-
-function resetEnergyOrbs() {
-    nextOrbSpawnZ = RACE_START_Z + ORB_SPAWN_INTERVAL_Z;
-    for (const orb of energyOrbs) {
-        orb.alive = false;
-        orb.collected = false;
-        orb.collectTimer = 0;
-        orb.mesh.visible = false;
-    }
-}
-
-function spawnOrb() {
-    const slot = energyOrbs.find(o => !o.alive);
-    if (!slot) return;
-
-    const aheadDist = ORB_SPAWN_AHEAD_MIN + Math.random() * (ORB_SPAWN_AHEAD_MAX - ORB_SPAWN_AHEAD_MIN);
-    const lateralOff = (Math.random() - 0.5) * 2 * ORB_LATERAL_SCATTER;
-
-    slot.position.set(
-        foilState.position.x + lateralOff,
-        ORB_FLOAT_HEIGHT,
-        foilState.position.z + aheadDist
-    );
-    slot.alive = true;
-    slot.collected = false;
-    slot.collectTimer = 0;
-    slot.mesh.visible = true;
-    slot.mesh.scale.setScalar(1);
-    slot.mesh.position.copy(slot.position);
-
-    const core = slot.mesh.getObjectByName('core') as THREE.Mesh;
-    const glow = slot.mesh.getObjectByName('glow') as THREE.Mesh;
-    const outer = slot.mesh.getObjectByName('outer') as THREE.Mesh;
-    if (core) (core.material as THREE.MeshBasicMaterial).opacity = 0.95;
-    if (glow) (glow.material as THREE.MeshBasicMaterial).opacity = 0.25;
-    if (outer) (outer.material as THREE.MeshBasicMaterial).opacity = 0.08;
-}
-
-function updateEnergyOrbs(dt: number, time: number) {
-    if (!PARAMS.energyOrbs) {
-        for (const orb of energyOrbs) {
-            orb.mesh.visible = false;
-            orb.alive = false;
-        }
-        return;
-    }
-    if (gameState !== 'riding') return;
-
-    // Spawn orbs as player progresses downwind
-    while (foilState.position.z + ORB_SPAWN_AHEAD_MIN > nextOrbSpawnZ) {
-        spawnOrb();
-        nextOrbSpawnZ += ORB_SPAWN_INTERVAL_Z;
-    }
-
-    const px = foilState.position.x;
-    const pz = foilState.position.z;
-
-    for (const orb of energyOrbs) {
-        if (!orb.alive) continue;
-
-        // Despawn if far behind the player
-        if (orb.position.z < pz - ORB_DESPAWN_BEHIND) {
-            orb.alive = false;
-            orb.mesh.visible = false;
-            continue;
-        }
-
-        // Collection dissolve animation
-        if (orb.collected) {
-            orb.collectTimer += dt;
-            const t = orb.collectTimer / 0.4;
-            if (t >= 1) {
-                orb.alive = false;
-                orb.mesh.visible = false;
-                continue;
-            }
-            const s = 1 + t * 2;
-            orb.mesh.scale.setScalar(s);
-            const core = orb.mesh.getObjectByName('core') as THREE.Mesh;
-            const glow = orb.mesh.getObjectByName('glow') as THREE.Mesh;
-            const outer = orb.mesh.getObjectByName('outer') as THREE.Mesh;
-            if (core) (core.material as THREE.MeshBasicMaterial).opacity = 0.95 * (1 - t);
-            if (glow) (glow.material as THREE.MeshBasicMaterial).opacity = 0.5 * (1 - t);
-            if (outer) (outer.material as THREE.MeshBasicMaterial).opacity = 0.2 * (1 - t);
-            continue;
-        }
-
-        // Collision check
-        const dx = px - orb.position.x;
-        const dz = pz - orb.position.z;
-        if (dx * dx + dz * dz < ORB_COLLECT_RADIUS * ORB_COLLECT_RADIUS) {
-            orb.collected = true;
-            orb.collectTimer = 0;
-
-            foilState.energy = 100;
-            const boostDir = headingToDir(foilState.heading);
-            foilState.velocity.addScaledVector(boostDir, ORB_SPEED_BOOST);
-            foilState.rideHeight = Math.min(foilState.rideHeight + 0.08, MAST_LENGTH);
-            continue;
-        }
-
-        // Animate: bob and rotate
-        const waterY = getWaterHeightFast(orb.position.x, orb.position.z, time, PARAMS.windSpeed);
-        orb.mesh.position.y = waterY + ORB_FLOAT_HEIGHT + Math.sin(time * 2.0 + orb.position.z * 0.01) * 0.5;
-        orb.mesh.rotation.y = time * 1.5;
-
-        const glow = orb.mesh.getObjectByName('glow') as THREE.Mesh;
-        if (glow) {
-            const pulse = 0.2 + 0.1 * Math.sin(time * 4.0 + orb.position.x);
-            (glow.material as THREE.MeshBasicMaterial).opacity = pulse;
-            glow.scale.setScalar(1.0 + 0.15 * Math.sin(time * 3.0));
-        }
-
-        const outer = orb.mesh.getObjectByName('outer') as THREE.Mesh;
-        if (outer) {
-            outer.scale.setScalar(1.0 + 0.25 * Math.sin(time * 2.0 + 1.0));
-            (outer.material as THREE.MeshBasicMaterial).opacity = 0.05 + 0.05 * Math.sin(time * 3.5);
-        }
-    }
-}
 
 
 // --- RACE MARKERS ---
@@ -2649,9 +2446,7 @@ function animate() {
     // Race logic
     updateRace(dt, time);
 
-    // Energy orbs
-    updateEnergyOrbs(dt, time);
-
+    
     // Lateral race-track tracking: the whole course (buoys + finish gate) drifts
     // to stay centred on the player's X so markers are always visible regardless
     // of how far the rider has drifted downwind.
