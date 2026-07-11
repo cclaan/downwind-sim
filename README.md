@@ -43,3 +43,21 @@ See [`foil-physics.md`](foil-physics.md) for the full physics spec.
 npm install
 npm run dev
 ```
+
+## Build
+
+```bash
+npm run build
+```
+
+This runs `tsc && vite build`. The output goes to `../static/downwind-sim` (see `vite.config.ts`), which is the App Engine static dir for the parent site. The build **empties and regenerates** that folder each time (`emptyOutDir: true`), so don't hand-edit files there.
+
+File flow:
+
+```
+public/*        →  static/downwind-sim/*        (copied verbatim by Vite)
+index.html      →  static/downwind-sim/index.html
+src/*           →  static/downwind-sim/assets/* (bundled + hashed)
+```
+
+Anything that needs a stable URL (e.g. `og-image.jpg`, 3D models) must live in `public/` — root-level files are **not** copied. App Engine then serves `static/downwind-sim/<file>` at `/downwind-sim/<file>` via the handlers in the parent `../app.yaml`. Deploy with `gcloud app deploy` from the `ae/` directory.
