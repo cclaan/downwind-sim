@@ -4,6 +4,7 @@ import { Sky } from 'three/examples/jsm/objects/Sky.js';
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 import { MTLLoader } from 'three/examples/jsm/loaders/MTLLoader.js';
 import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import GUI from 'lil-gui';
 
 const BASE = import.meta.env.BASE_URL;
@@ -305,8 +306,9 @@ function smoothstep(edge0: number, edge1: number, x: number): number {
     return t * t * (3 - 2 * t);
 }
 
-function headingToDir(heading: number): THREE.Vector3 {
-    return new THREE.Vector3(Math.sin(heading), 0, Math.cos(heading));
+// Pass a scratch vector as `out` on per-frame paths to avoid allocation
+function headingToDir(heading: number, out = new THREE.Vector3()): THREE.Vector3 {
+    return out.set(Math.sin(heading), 0, Math.cos(heading));
 }
 
 function resetFoilState() {
@@ -804,10 +806,26 @@ scene.add(waterMesh);
 
 
 // --- CPU WAVE LOGIC (FOR FOIL PHYSICS) ---
-function getWaterDisplacement(x: number, z: number, time: number, windSpeed: number) {
-    const p = new THREE.Vector3(x, 0, z);
-    const tangent = new THREE.Vector3(1, 0, 0);
-    const binormal = new THREE.Vector3(0, 0, 1);
+// These run 15+ times per frame, so they write into pre-allocated outputs
+// instead of returning fresh vectors (avoids GC pressure / frame hitches).
+interface SurfaceInfo {
+    position: THREE.Vector3;
+    normal: THREE.Vector3;
+}
+
+function makeSurfaceInfo(): SurfaceInfo {
+    return { position: new THREE.Vector3(), normal: new THREE.Vector3() };
+}
+
+const _wdTangent = new THREE.Vector3();
+const _wdBinormal = new THREE.Vector3();
+
+function getWaterDisplacement(
+    x: number, z: number, time: number, windSpeed: number, out: SurfaceInfo
+): SurfaceInfo {
+    const p = out.position.set(x, 0, z);
+    const tangent = _wdTangent.set(1, 0, 0);
+    const binormal = _wdBinormal.set(0, 0, 1);
 
     for (const w of waveConfig) {
         const k = 2.0 * Math.PI / w.wavelength;
@@ -830,52 +848,63 @@ function getWaterDisplacement(x: number, z: number, time: number, windSpeed: num
         binormal.z -= w.dir.y * w.dir.y * effectiveSteepness * Math.sin(f);
     }
 
-    const normal = new THREE.Vector3().crossVectors(binormal, tangent).normalize();
-    return { position: p, normal };
+    out.normal.crossVectors(binormal, tangent).normalize();
+    return out;
 }
 
-function getSurfaceInfoAtWorldPos(worldX: number, worldZ: number, time: number, windSpeed: number) {
+function getSurfaceInfoAtWorldPos(
+    worldX: number, worldZ: number, time: number, windSpeed: number, out: SurfaceInfo
+): SurfaceInfo {
     let testX = worldX;
     let testZ = worldZ;
-    let info = getWaterDisplacement(testX, testZ, time, windSpeed);
+    let info = getWaterDisplacement(testX, testZ, time, windSpeed, out);
 
     for (let i = 0; i < 3; i++) {
         const errX = worldX - info.position.x;
         const errZ = worldZ - info.position.z;
         testX += errX;
         testZ += errZ;
-        info = getWaterDisplacement(testX, testZ, time, windSpeed);
+        info = getWaterDisplacement(testX, testZ, time, windSpeed, out);
     }
     return info;
 }
 
 
 // --- WAVE SAMPLING (multi-point across wing span) ---
+const _waveSample = {
+    center: makeSurfaceInfo(),
+    leftTip: makeSurfaceInfo(),
+    rightTip: makeSurfaceInfo(),
+    gradient: new THREE.Vector2(),
+};
+const _foilDir = new THREE.Vector3();
+
 function sampleWaveAtFoilPoints(time: number, windSpeed: number) {
-    const dir = headingToDir(foilState.heading);
-    const right = new THREE.Vector3(dir.z, 0, -dir.x);
+    const dir = headingToDir(foilState.heading, _foilDir);
+    const rightX = dir.z;
+    const rightZ = -dir.x;
     const halfSpan = activeFoil.wingSpan / 2;
 
     const cx = foilState.position.x;
     const cz = foilState.position.z;
 
-    const center = getSurfaceInfoAtWorldPos(cx, cz, time, windSpeed);
-    const leftTip = getSurfaceInfoAtWorldPos(
-        cx - right.x * halfSpan,
-        cz - right.z * halfSpan,
-        time, windSpeed
+    getSurfaceInfoAtWorldPos(cx, cz, time, windSpeed, _waveSample.center);
+    getSurfaceInfoAtWorldPos(
+        cx - rightX * halfSpan,
+        cz - rightZ * halfSpan,
+        time, windSpeed, _waveSample.leftTip
     );
-    const rightTip = getSurfaceInfoAtWorldPos(
-        cx + right.x * halfSpan,
-        cz + right.z * halfSpan,
-        time, windSpeed
+    getSurfaceInfoAtWorldPos(
+        cx + rightX * halfSpan,
+        cz + rightZ * halfSpan,
+        time, windSpeed, _waveSample.rightTip
     );
 
-    const n = center.normal;
+    const n = _waveSample.center.normal;
     const ny = Math.max(n.y, 0.01);
-    const gradient = new THREE.Vector2(-n.x / ny, -n.z / ny);
+    _waveSample.gradient.set(-n.x / ny, -n.z / ny);
 
-    return { center, leftTip, rightTip, gradient };
+    return _waveSample;
 }
 
 
@@ -1114,54 +1143,74 @@ const distanceContainer = document.querySelector('#distance-container') as HTMLE
 const distanceLabel = document.querySelector('#distance-label') as HTMLElement;
 const distanceBarFill = document.querySelector('#distance-bar-fill') as HTMLElement;
 
+// Cached DOM writers — the HUD update runs every frame, but most values only
+// change occasionally. Skipping no-op writes avoids per-frame DOM node
+// replacement and style/layout invalidation (which caused the UI flicker).
+const _textCache = new WeakMap<HTMLElement, string>();
+function setText(el: HTMLElement, v: string) {
+    if (_textCache.get(el) === v) return;
+    _textCache.set(el, v);
+    el.textContent = v;
+}
+
+const _htmlCache = new WeakMap<HTMLElement, string>();
+function setHTML(el: HTMLElement, v: string) {
+    if (_htmlCache.get(el) === v) return;
+    _htmlCache.set(el, v);
+    el.innerHTML = v;
+}
+
+const _styleCache = new WeakMap<HTMLElement, Record<string, string>>();
+function setStyle(el: HTMLElement, prop: string, v: string) {
+    let rec = _styleCache.get(el);
+    if (!rec) { rec = {}; _styleCache.set(el, rec); }
+    if (rec[prop] === v) return;
+    rec[prop] = v;
+    (el.style as any)[prop] = v;
+}
+
 function updateHUD() {
     const knots = foilState.speed * 1.944;
-    hudSpeed.textContent = `${knots.toFixed(1)} kts`;
+    setText(hudSpeed, `${knots.toFixed(1)} kts`);
     const speedPct = Math.max(0, Math.min(100, (knots / SPEED_BAR_MAX_KTS) * 100));
-    hudSpeedFill.style.width = `${speedPct}%`;
-    hudSpeedFill.style.background = speedColor(knots);
+    setStyle(hudSpeedFill, 'width', `${speedPct.toFixed(1)}%`);
+    setStyle(hudSpeedFill, 'background', speedColor(knots));
 
     const heightPct = Math.max(0, Math.min(100, (foilState.rideHeight / MAST_LENGTH) * 100));
-    hudHeight.textContent = `Height: ${(foilState.rideHeight * 100).toFixed(0)} cm`;
-    hudHeightFill.style.width = `${heightPct}%`;
-    hudHeightFill.style.background = heightPct < 20 ? '#ef5350' : '#4fc3f7';
+    setText(hudHeight, `Height: ${(foilState.rideHeight * 100).toFixed(0)} cm`);
+    setStyle(hudHeightFill, 'width', `${heightPct.toFixed(1)}%`);
+    setStyle(hudHeightFill, 'background', heightPct < 20 ? '#ef5350' : '#4fc3f7');
 
-    hudEnergy.textContent = `Energy: ${Math.round(foilState.energy)}`;
-    hudEnergyFill.style.width = `${foilState.energy}%`;
+    setText(hudEnergy, `Energy: ${Math.round(foilState.energy)}`);
+    setStyle(hudEnergyFill, 'width', `${foilState.energy.toFixed(1)}%`);
 
     // Hide distance bar before the race; show during riding/crashed
-    if (gameState === 'starting') {
-        distanceContainer.style.display = 'none';
-    } else {
-        distanceContainer.style.display = '';
-    }
+    setStyle(distanceContainer, 'display', gameState === 'starting' ? 'none' : '');
     updateRaceHUD();
 
     if (gameState === 'starting') {
-        hudTitle.textContent = '🏄 Downwind';
-        hudSubtitle.textContent = riderLoaded
+        setText(hudTitle, '🏄 Downwind');
+        setText(hudSubtitle, riderLoaded
             ? `race to ${RACE_LENGTH_KM} km · pump to stay on foil`
-            : `race to ${RACE_LENGTH_KM} km · pump to stay on foil · loading rider…`;
-        raceDistancePicker.style.display = 'flex';
-        if (isMobile) {
-            hudControls.textContent = 'Tap to launch · Drag to steer';
-        } else {
-            hudControls.textContent = '← → Turn  ·  ↑ ↓ Pitch  ·  SPACE Pump\n\n    Press SPACE to launch';
-        }
-        hudLeaderboard.innerHTML = cachedTop3HTML;
-        hudLeaderboard.style.display = cachedTop3HTML ? '' : 'none';
+            : `race to ${RACE_LENGTH_KM} km · pump to stay on foil · loading rider…`);
+        setStyle(raceDistancePicker, 'display', 'flex');
+        setText(hudControls, isMobile
+            ? 'Tap to launch · Drag to steer'
+            : '← → Turn  ·  ↑ ↓ Pitch  ·  SPACE Pump\n\n    Press SPACE to launch');
+        setHTML(hudLeaderboard, cachedTop3HTML);
+        setStyle(hudLeaderboard, 'display', cachedTop3HTML ? '' : 'none');
     } else if (gameState === 'crashed') {
-        hudTitle.textContent = 'Off Foil!';
-        hudSubtitle.textContent = '';
-        hudControls.textContent = isMobile ? 'Tap to restart' : 'Press R to restart';
-        raceDistancePicker.style.display = 'none';
-        hudLeaderboard.style.display = 'none';
+        setText(hudTitle, 'Off Foil!');
+        setText(hudSubtitle, '');
+        setText(hudControls, isMobile ? 'Tap to restart' : 'Press R to restart');
+        setStyle(raceDistancePicker, 'display', 'none');
+        setStyle(hudLeaderboard, 'display', 'none');
     } else {
-        hudTitle.textContent = '';
-        hudSubtitle.textContent = '';
-        hudControls.textContent = '';
-        raceDistancePicker.style.display = 'none';
-        hudLeaderboard.style.display = 'none';
+        setText(hudTitle, '');
+        setText(hudSubtitle, '');
+        setText(hudControls, '');
+        setStyle(raceDistancePicker, 'display', 'none');
+        setStyle(hudLeaderboard, 'display', 'none');
     }
 }
 
@@ -1303,59 +1352,61 @@ function updateRaceHUD() {
     const totalRaceDist = RACE_LENGTH_KM * 1000;
 
     if (race.finished) {
-        distanceLabel.textContent = `FINISHED — ${RACE_LENGTH_KM} km  (path ${(path / 1000).toFixed(2)} km)`;
-        distanceBarFill.style.width = '100%';
-        distanceBarFill.style.background = 'linear-gradient(90deg,#ffeb3b,#ff9800)';
-        raceTimerEl.textContent = fmtTime(race.totalElapsed);
-        raceTimerEl.style.display = 'block';
-        kmTickRow.style.display = 'flex';
-        kmSplitsRow.style.display = 'flex';
+        setText(distanceLabel, `FINISHED — ${RACE_LENGTH_KM} km  (path ${(path / 1000).toFixed(2)} km)`);
+        setStyle(distanceBarFill, 'width', '100%');
+        setStyle(distanceBarFill, 'background', 'linear-gradient(90deg,#ffeb3b,#ff9800)');
+        setText(raceTimerEl, fmtTime(race.totalElapsed));
+        setStyle(raceTimerEl, 'display', 'block');
+        setStyle(kmTickRow, 'display', 'flex');
+        setStyle(kmSplitsRow, 'display', 'flex');
     } else if (race.active) {
         const racePct = Math.min(dwind / totalRaceDist, 1) * 100;
-        distanceLabel.textContent =
+        setText(distanceLabel,
             `${(dwind / 1000).toFixed(2)} / ${RACE_LENGTH_KM} km` +
-            `  · path ${(path / 1000).toFixed(2)} km`;
-        distanceBarFill.style.width = `${racePct}%`;
-        distanceBarFill.style.background = 'linear-gradient(90deg,#ffeb3b,#ff9800)';
-        raceTimerEl.textContent = fmtTime(race.totalElapsed);
-        raceTimerEl.style.display = 'block';
-        kmTickRow.style.display = 'flex';
-        kmSplitsRow.style.display = 'flex';
+            `  · path ${(path / 1000).toFixed(2)} km`);
+        setStyle(distanceBarFill, 'width', `${racePct.toFixed(2)}%`);
+        setStyle(distanceBarFill, 'background', 'linear-gradient(90deg,#ffeb3b,#ff9800)');
+        setText(raceTimerEl, fmtTime(race.totalElapsed));
+        setStyle(raceTimerEl, 'display', 'block');
+        setStyle(kmTickRow, 'display', 'flex');
+        setStyle(kmSplitsRow, 'display', 'flex');
     } else if (gameState === 'crashed' && path > 0) {
         const racePct = Math.min(dwind / totalRaceDist, 1) * 100;
-        distanceLabel.textContent =
+        setText(distanceLabel,
             `Crashed at ${(dwind / 1000).toFixed(2)} / ${RACE_LENGTH_KM} km` +
-            `  · path ${(path / 1000).toFixed(2)} km`;
-        distanceBarFill.style.width = `${racePct}%`;
-        distanceBarFill.style.background = 'linear-gradient(90deg,#ef5350,#ff7043)';
-        raceTimerEl.textContent = fmtTime(race.totalElapsed);
-        raceTimerEl.style.display = 'block';
-        kmTickRow.style.display = 'flex';
-        kmSplitsRow.style.display = 'flex';
+            `  · path ${(path / 1000).toFixed(2)} km`);
+        setStyle(distanceBarFill, 'width', `${racePct.toFixed(2)}%`);
+        setStyle(distanceBarFill, 'background', 'linear-gradient(90deg,#ef5350,#ff7043)');
+        setText(raceTimerEl, fmtTime(race.totalElapsed));
+        setStyle(raceTimerEl, 'display', 'block');
+        setStyle(kmTickRow, 'display', 'flex');
+        setStyle(kmSplitsRow, 'display', 'flex');
     } else {
-        raceTimerEl.style.display = 'none';
-        kmTickRow.style.display = 'none';
-        kmSplitsRow.style.display = 'none';
+        setStyle(raceTimerEl, 'display', 'none');
+        setStyle(kmTickRow, 'display', 'none');
+        setStyle(kmSplitsRow, 'display', 'none');
     }
 
-    // Km split badges
-    kmSplitsRow.innerHTML = '';
-    for (let i = 0; i < race.kmSplitTimes.length; i++) {
-        const prev = i > 0 ? race.kmSplitTimes[i - 1] : 0;
-        const split = race.kmSplitTimes[i] - prev;
-        const badge = document.createElement('span');
-        badge.className = 'km-split-badge';
-        badge.textContent = `${i + 1}km ${fmtTime(split)}`;
-        kmSplitsRow.appendChild(badge);
+    // Km split badges — only rebuild when a split is added (or cleared on reset)
+    if (kmSplitsRow.childElementCount !== race.kmSplitTimes.length) {
+        kmSplitsRow.innerHTML = '';
+        for (let i = 0; i < race.kmSplitTimes.length; i++) {
+            const prev = i > 0 ? race.kmSplitTimes[i - 1] : 0;
+            const split = race.kmSplitTimes[i] - prev;
+            const badge = document.createElement('span');
+            badge.className = 'km-split-badge';
+            badge.textContent = `${i + 1}km ${fmtTime(split)}`;
+            kmSplitsRow.appendChild(badge);
+        }
     }
 
     // Split flash fade
     if (race.splitFlashTimer > 0) {
         const alpha = Math.min(race.splitFlashTimer / 0.6, 1.0);
-        splitFlashEl.style.opacity = String(alpha);
-        splitFlashEl.textContent = race.splitFlashText;
+        setStyle(splitFlashEl, 'opacity', alpha.toFixed(2));
+        setText(splitFlashEl, race.splitFlashText);
     } else {
-        splitFlashEl.style.opacity = '0';
+        setStyle(splitFlashEl, 'opacity', '0');
     }
 }
 
@@ -1404,11 +1455,15 @@ const perfStats = {
     triangles: 0,
 };
 
+// No .listen() — that rewrites the GUI's DOM inputs every frame. We refresh
+// the displays manually on the same 500ms tick that updates the values.
 const statsFolder = gui.addFolder('Performance');
-statsFolder.add(perfStats, 'fps').name('FPS').listen().disable();
-statsFolder.add(perfStats, 'frameMs').name('Frame (ms)').listen().disable();
-statsFolder.add(perfStats, 'drawCalls').name('Draw Calls').listen().disable();
-statsFolder.add(perfStats, 'triangles').name('Triangles').listen().disable();
+const statControllers = [
+    statsFolder.add(perfStats, 'fps').name('FPS').disable(),
+    statsFolder.add(perfStats, 'frameMs').name('Frame (ms)').disable(),
+    statsFolder.add(perfStats, 'drawCalls').name('Draw Calls').disable(),
+    statsFolder.add(perfStats, 'triangles').name('Triangles').disable(),
+];
 
 let prevTime = performance.now();
 let frameCount = 0;
@@ -1532,11 +1587,12 @@ function clearWakeTrail() {
 
 const WAKE_MAST_OFFSET = -0.6;
 const WAKE_MIN_SPACING_SQ = 0.15 * 0.15;
+const _wakeDir = new THREE.Vector3();
 
 function updateWakeTrail(dt: number, time: number) {
     if (gameState === 'riding' && foilState.onFoil && foilState.speed > 1.0) {
         if (time - lastWakeEmitTime >= WAKE_EMIT_INTERVAL) {
-            const dir = headingToDir(foilState.heading);
+            const dir = headingToDir(foilState.heading, _wakeDir);
             const ex = foilState.position.x + dir.x * WAKE_MAST_OFFSET;
             const ez = foilState.position.z + dir.z * WAKE_MAST_OFFSET;
 
@@ -1651,12 +1707,14 @@ function clearBubbles() {
     bubbleInstMesh.instanceMatrix.needsUpdate = true;
 }
 
+const _bubbleDir = new THREE.Vector3();
+
 function updateBubbles(dt: number, time: number) {
     const foiling = gameState === 'riding' && foilState.onFoil && foilState.speed > 1.0;
 
     if (foiling) {
         bubbleEmitAccum += BUBBLE_EMIT_RATE * dt;
-        const dir = headingToDir(foilState.heading);
+        const dir = headingToDir(foilState.heading, _bubbleDir);
         const mastX = foilState.position.x + dir.x * WAKE_MAST_OFFSET;
         const mastZ = foilState.position.z + dir.z * WAKE_MAST_OFFSET;
 
@@ -1959,24 +2017,23 @@ interface RaceBuoy {
 }
 const raceBuoys: RaceBuoy[] = [];
 
+// Shared buoy geometry/materials — buoys are visually identical, so creating
+// per-buoy copies (up to 35 buoys on a 5 km course) just wastes GPU resources
+// and leaks on course rebuild.
+const buoyBodyGeo = new THREE.CylinderGeometry(0.3, 0.22, 0.9, 8);
+const buoyBallGeo = new THREE.SphereGeometry(0.3, 8, 6);
+const buoyBodyMatRed = new THREE.MeshStandardMaterial({ color: 0xcc2200, roughness: 0.6, metalness: 0.0 });
+const buoyBodyMatWhite = new THREE.MeshStandardMaterial({ color: 0xf0f0f0, roughness: 0.6, metalness: 0.0 });
+const buoyBallMatRed = new THREE.MeshStandardMaterial({ color: 0xff3300, roughness: 0.35 });
+const buoyBallMatWhite = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.35 });
+
 function createBuoyMesh(red: boolean): THREE.Group {
     const g = new THREE.Group();
-    const bodyGeo = new THREE.CylinderGeometry(0.3, 0.22, 0.9, 8);
-    const bodyMat = new THREE.MeshStandardMaterial({
-        color: red ? 0xcc2200 : 0xf0f0f0,
-        roughness: 0.6,
-        metalness: 0.0,
-    });
-    const body = new THREE.Mesh(bodyGeo, bodyMat);
+    const body = new THREE.Mesh(buoyBodyGeo, red ? buoyBodyMatRed : buoyBodyMatWhite);
     body.position.y = 0.45;
     g.add(body);
 
-    const ballGeo = new THREE.SphereGeometry(0.3, 8, 6);
-    const ballMat = new THREE.MeshStandardMaterial({
-        color: red ? 0xff3300 : 0xffffff,
-        roughness: 0.35,
-    });
-    const ball = new THREE.Mesh(ballGeo, ballMat);
+    const ball = new THREE.Mesh(buoyBallGeo, red ? buoyBallMatRed : buoyBallMatWhite);
     ball.position.y = 1.05;
     g.add(ball);
 
@@ -2023,20 +2080,27 @@ const gateBuoyMat = new THREE.MeshStandardMaterial({ color: 0xff6a00, roughness:
     finishGate.add(gb);
 });
 
-// Checkered crossbar made of alternating black/white segments
+// Checkered crossbar made of alternating black/white segments.
+// Merged into two meshes (one per color) — 33 individual meshes each with
+// their own material meant 33 extra draw calls per frame.
 const crossBarY = 12;
 const segCount = 33;
 const totalBarWidth = 66;
 const segW = totalBarWidth / segCount;
 const segGeo = new THREE.BoxGeometry(segW - 0.05, 0.7, 0.5);
-for (let i = 0; i < segCount; i++) {
-    const segMat = new THREE.MeshStandardMaterial({
-        color: i % 2 === 0 ? 0x111111 : 0xffffff,
-        roughness: 0.5,
-    });
-    const seg = new THREE.Mesh(segGeo, segMat);
-    seg.position.set(-totalBarWidth / 2 + segW * (i + 0.5), crossBarY, 0);
-    finishGate.add(seg);
+{
+    const blackParts: THREE.BufferGeometry[] = [];
+    const whiteParts: THREE.BufferGeometry[] = [];
+    for (let i = 0; i < segCount; i++) {
+        const g = segGeo.clone().translate(-totalBarWidth / 2 + segW * (i + 0.5), crossBarY, 0);
+        (i % 2 === 0 ? blackParts : whiteParts).push(g);
+    }
+    const segMatBlack = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.5 });
+    const segMatWhite = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.5 });
+    finishGate.add(new THREE.Mesh(mergeGeometries(blackParts), segMatBlack));
+    finishGate.add(new THREE.Mesh(mergeGeometries(whiteParts), segMatWhite));
+    for (const g of [...blackParts, ...whiteParts]) g.dispose();
+    segGeo.dispose();
 }
 
 // Thin support rod behind the segments
@@ -2125,6 +2189,11 @@ window.addEventListener('keyup', (e) => {
 
 
 // --- PHYSICS UPDATE ---
+const _physForce = new THREE.Vector3();
+const _physDragDir = new THREE.Vector3();
+const _physDir = new THREE.Vector3();
+const _physLateral = new THREE.Vector3();
+
 function updatePhysics(dt: number, time: number) {
     if (gameState !== 'riding') return;
 
@@ -2185,7 +2254,7 @@ function updatePhysics(dt: number, time: number) {
     }
 
     // --- Accumulate horizontal forces ---
-    const force = new THREE.Vector3(0, 0, 0);
+    const force = _physForce.set(0, 0, 0);
 
     // Wave energy: gravitational acceleration along wave slope
     force.x += RIDER_MASS * GRAVITY * (-wave.gradient.x) * WAVE_ENERGY_MULT;
@@ -2193,7 +2262,7 @@ function updatePhysics(dt: number, time: number) {
 
     // Drag opposing velocity
     if (speed > 0.01) {
-        const dragDir = foilState.velocity.clone().normalize();
+        const dragDir = _physDragDir.copy(foilState.velocity).normalize();
         force.addScaledVector(dragDir, -dragMag);
     }
 
@@ -2207,7 +2276,7 @@ function updatePhysics(dt: number, time: number) {
 
     // --- Pump ---
     if (input.pump && foilState.energy >= PUMP_COST && (time - foilState.lastPumpTime) > PUMP_COOLDOWN) {
-        const pumpDir = headingToDir(foilState.heading);
+        const pumpDir = headingToDir(foilState.heading, _physDir);
         foilState.velocity.addScaledVector(pumpDir, PUMP_IMPULSE);
         foilState.energy -= PUMP_COST;
         foilState.lastPumpTime = time;
@@ -2221,16 +2290,15 @@ function updatePhysics(dt: number, time: number) {
     foilState.energy = Math.min(100, foilState.energy + ENERGY_REGEN * dt);
 
     // --- Integrate velocity ---
-    const accel = force.clone().divideScalar(RIDER_MASS);
-    foilState.velocity.addScaledVector(accel, dt);
+    foilState.velocity.addScaledVector(force, dt / RIDER_MASS);
     foilState.velocity.y = 0;
 
     // Lateral slip decay: foil has high sideways resistance
-    const dir = headingToDir(foilState.heading);
+    const dir = headingToDir(foilState.heading, _physDir);
     const fwdSpeed = foilState.velocity.dot(dir);
-    const lateral = foilState.velocity.clone().addScaledVector(dir, -fwdSpeed);
+    const lateral = _physLateral.copy(foilState.velocity).addScaledVector(dir, -fwdSpeed);
     lateral.multiplyScalar(Math.exp(-LATERAL_RESISTANCE * dt));
-    foilState.velocity.copy(dir.clone().multiplyScalar(fwdSpeed)).add(lateral);
+    foilState.velocity.copy(dir).multiplyScalar(fwdSpeed).add(lateral);
 
     // --- Integrate position ---
     foilState.position.addScaledVector(foilState.velocity, dt);
@@ -2281,6 +2349,8 @@ function updatePhysics(dt: number, time: number) {
 // --- CHASE CAMERA ---
 const _chaseCamPos = new THREE.Vector3();
 const _chaseLookAt = new THREE.Vector3();
+const _chaseHeadDir = new THREE.Vector3();
+const _chaseRightDir = new THREE.Vector3();
 
 const CHASE_CAM_LATERAL_MAG = 10;
 const CHASE_CAM_DEAD_ZONE = 0.1;
@@ -2299,8 +2369,8 @@ function updateChaseCamera(dt: number) {
 
     controls.enabled = false;
 
-    const headDir = headingToDir(foilState.heading);
-    const rightDir = new THREE.Vector3(headDir.z, 0, -headDir.x);
+    const headDir = headingToDir(foilState.heading, _chaseHeadDir);
+    const rightDir = _chaseRightDir.set(headDir.z, 0, -headDir.x);
 
     // Swing camera side based on rider heading vs wave direction (+Z).
     // sin(heading) > 0 → heading left of downwind → camera on left (-lateral)
@@ -2331,19 +2401,28 @@ function updateChaseCamera(dt: number) {
 
 
 // --- BOARD VISUAL UPDATE ---
+const _boardSurf = makeSurfaceInfo();
+const _yawQ = new THREE.Quaternion();
+const _pitchQ = new THREE.Quaternion();
+const _rollQ = new THREE.Quaternion();
+const _surfaceQ = new THREE.Quaternion();
+const AXIS_X = new THREE.Vector3(1, 0, 0);
+const AXIS_Y = new THREE.Vector3(0, 1, 0);
+const AXIS_Z = new THREE.Vector3(0, 0, 1);
+
 function updateBoardVisuals(time: number) {
     const wave = getSurfaceInfoAtWorldPos(
         foilState.position.x,
         foilState.position.z,
         time,
-        PARAMS.windSpeed
+        PARAMS.windSpeed,
+        _boardSurf
     );
 
     if (gameState === 'starting') {
         // Float on the surface
         boardGroup.position.copy(wave.position);
-        const up = new THREE.Vector3(0, 1, 0);
-        boardGroup.quaternion.setFromUnitVectors(up, wave.normal);
+        boardGroup.quaternion.setFromUnitVectors(AXIS_Y, wave.normal);
         return;
     }
 
@@ -2355,20 +2434,12 @@ function updateBoardVisuals(time: number) {
     );
 
     // Orientation: combine heading, pitch, roll, and wave surface tilt
-    const yawQ = new THREE.Quaternion().setFromAxisAngle(
-        new THREE.Vector3(0, 1, 0), foilState.heading
-    );
-    const pitchQ = new THREE.Quaternion().setFromAxisAngle(
-        new THREE.Vector3(1, 0, 0), foilState.pitch
-    );
-    const rollQ = new THREE.Quaternion().setFromAxisAngle(
-        new THREE.Vector3(0, 0, 1), -foilState.roll
-    );
-    const surfaceQ = new THREE.Quaternion().setFromUnitVectors(
-        new THREE.Vector3(0, 1, 0), wave.normal
-    );
+    _yawQ.setFromAxisAngle(AXIS_Y, foilState.heading);
+    _pitchQ.setFromAxisAngle(AXIS_X, foilState.pitch);
+    _rollQ.setFromAxisAngle(AXIS_Z, -foilState.roll);
+    _surfaceQ.setFromUnitVectors(AXIS_Y, wave.normal);
 
-    boardGroup.quaternion.copy(surfaceQ).multiply(yawQ).multiply(pitchQ).multiply(rollQ);
+    boardGroup.quaternion.copy(_surfaceQ).multiply(_yawQ).multiply(_pitchQ).multiply(_rollQ);
 }
 
 
@@ -2509,12 +2580,12 @@ function animate() {
     if (fpsAccum >= 500) {
         perfStats.fps = Math.round((frameCount / fpsAccum) * 1000);
         perfStats.frameMs = +(frameDelta).toFixed(1);
+        perfStats.drawCalls = renderer.info.render.calls;
+        perfStats.triangles = renderer.info.render.triangles;
         frameCount = 0;
         fpsAccum = 0;
+        for (const c of statControllers) c.updateDisplay();
     }
-
-    perfStats.drawCalls = renderer.info.render.calls;
-    perfStats.triangles = renderer.info.render.triangles;
 }
 
 
