@@ -1123,6 +1123,7 @@ const hudEnergy = document.querySelector('#hud-energy') as HTMLElement;
 const hudEnergyFill = document.querySelector('#energy-bar-fill') as HTMLElement;
 const hudTitle = document.querySelector('#hud-title') as HTMLElement;
 const hudSubtitle = document.querySelector('#hud-subtitle') as HTMLElement;
+const hudCredit = document.querySelector('#hud-credit') as HTMLElement;
 const hudControls = document.querySelector('#hud-controls') as HTMLElement;
 const hudLeaderboard = document.querySelector('#hud-leaderboard') as HTMLElement;
 const raceDistancePicker = document.querySelector('#race-distance-picker') as HTMLElement;
@@ -1193,6 +1194,7 @@ function updateHUD() {
         setText(hudSubtitle, riderLoaded
             ? `race to ${RACE_LENGTH_KM} km · pump to stay on foil`
             : `race to ${RACE_LENGTH_KM} km · pump to stay on foil · loading rider…`);
+        setStyle(hudCredit, 'display', '');
         setStyle(raceDistancePicker, 'display', 'flex');
         setText(hudControls, isMobile
             ? 'Tap to launch · Drag to steer'
@@ -1203,12 +1205,14 @@ function updateHUD() {
         setText(hudTitle, 'Off Foil!');
         setText(hudSubtitle, '');
         setText(hudControls, isMobile ? 'Tap to restart' : 'Press R to restart');
+        setStyle(hudCredit, 'display', 'none');
         setStyle(raceDistancePicker, 'display', 'none');
         setStyle(hudLeaderboard, 'display', 'none');
     } else {
         setText(hudTitle, '');
         setText(hudSubtitle, '');
         setText(hudControls, '');
+        setStyle(hudCredit, 'display', 'none');
         setStyle(raceDistancePicker, 'display', 'none');
         setStyle(hudLeaderboard, 'display', 'none');
     }
@@ -1257,6 +1261,10 @@ function escapeHTML(s: string): string {
     return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+// Finish screen link to used boards on UsedWaterSports.com, the maker's gear site.
+// Absolute, so it still works from a fork.
+const GEAR_LINK_URL = 'https://usedwatersports.com/used-foil-boards';
+
 function showRaceResults() {
     scoreSubmitted = false;
     const total = race.totalElapsed;
@@ -1285,6 +1293,10 @@ function showRaceResults() {
         `<button id="finish-submit-btn">Submit Score</button>` +
         `</div>`;
     html += `<div id="finish-submit-status"></div>`;
+
+    // The maker's gear site. A new tab, so the result and the score form stay as they are.
+    html += `<a class="finish-gear" href="${GEAR_LINK_URL}" target="_blank" rel="noopener">` +
+        `Ready for real bumps?<span class="finish-gear-cta">Used downwind boards &amp; foils →</span></a>`;
 
     html += `<div id="finish-leaderboard-slot">` +
         `<div class="finish-loading">Loading leaderboard…</div></div>`;

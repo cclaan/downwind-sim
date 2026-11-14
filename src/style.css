@@ -122,6 +122,9 @@ canvas {
 }
 
 /* ---------- center-screen message ---------- */
+/* z-index: above the phone touch layer (#mobile-touch-overlay, 150), so the
+   credit link and the distance picker take their own taps. pointer-events:
+   none passes every other tap through to the touch layer, as before. */
 #hud-message {
   position: fixed;
   top: 50%;
@@ -130,7 +133,7 @@ canvas {
   color: #fff;
   text-align: center;
   pointer-events: none;
-  z-index: 101;
+  z-index: 160;
 }
 
 #hud-title {
@@ -151,6 +154,41 @@ canvas {
   color: #fff;
   text-shadow: 0 2px 6px rgba(0, 0, 0, 0.6);
   margin-bottom: 18px;
+}
+
+/* The maker's credit under the subtitle (start screen only). Each half stays
+   on one line, so a narrow screen breaks it after the dash. */
+#hud-credit {
+  display: block;
+  width: fit-content;
+  margin: -10px auto 12px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  font-family: monospace;
+  font-size: 12px;
+  letter-spacing: 0.5px;
+  color: rgba(255, 255, 255, 0.85);
+  text-decoration: none;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8);
+  pointer-events: auto;
+  transition: background 0.15s;
+}
+
+#hud-credit > span {
+  white-space: nowrap;
+}
+
+#hud-credit:hover {
+  background: rgba(0, 0, 0, 0.35);
+  color: #fff;
+}
+
+.hud-credit-brand {
+  color: #4fc3f7;
+  font-weight: 700;
+  text-decoration: underline;
+  text-decoration-color: rgba(79, 195, 247, 0.5);
+  text-underline-offset: 3px;
 }
 
 #race-distance-picker {
@@ -512,6 +550,30 @@ canvas {
   font-size: 13px;
   min-height: 20px;
   margin-bottom: 4px;
+}
+
+/* Link to the gear site, under the score form */
+.finish-gear {
+  display: block;
+  width: fit-content;
+  margin: 0 auto 10px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: rgba(255, 255, 255, 0.6);
+  text-decoration: none;
+  transition: background 0.15s;
+}
+
+.finish-gear:hover {
+  background: rgba(79, 195, 247, 0.12);
+}
+
+.finish-gear-cta {
+  display: block;
+  color: #4fc3f7;
+  font-weight: bold;
 }
 
 .finish-loading {
