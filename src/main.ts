@@ -1296,7 +1296,7 @@ function showRaceResults() {
 
     // The maker's gear site. A new tab, so the result and the score form stay as they are.
     html += `<a class="finish-gear" href="${GEAR_LINK_URL}" target="_blank" rel="noopener">` +
-        `Ready for real bumps?<span class="finish-gear-cta">Used downwind boards &amp; foils →</span></a>`;
+        `Ready for real bumps?<span class="finish-gear-cta">Used downwind &amp; foil boards →</span></a>`;
 
     html += `<div id="finish-leaderboard-slot">` +
         `<div class="finish-loading">Loading leaderboard…</div></div>`;
