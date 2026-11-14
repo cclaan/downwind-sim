@@ -1185,8 +1185,8 @@ function updateHUD() {
     setText(hudEnergy, `Energy: ${Math.round(foilState.energy)}`);
     setStyle(hudEnergyFill, 'width', `${foilState.energy.toFixed(1)}%`);
 
-    // Hide distance bar before the race; show during riding/crashed
-    setStyle(distanceContainer, 'display', gameState === 'starting' ? 'none' : '');
+    // Hide distance bar before the race and under the finish results; show during riding/crashed
+    setStyle(distanceContainer, 'display', gameState === 'starting' || race.finished ? 'none' : '');
     updateRaceHUD();
 
     if (gameState === 'starting') {
@@ -1301,7 +1301,7 @@ function showRaceResults() {
     html += `<div id="finish-leaderboard-slot">` +
         `<div class="finish-loading">Loading leaderboard…</div></div>`;
 
-    html += `<div class="finish-hint">Press R to restart</div>`;
+    html += `<div class="finish-hint">${isMobile ? 'Tap outside to restart' : 'Press R to restart'}</div>`;
 
     finishOverlay.innerHTML = html;
     finishOverlay.style.display = 'block';

@@ -385,6 +385,16 @@ canvas {
   overflow-y: auto;
 }
 
+/* Phones: min-width plus the side padding was wider than the screen */
+@media (max-width: 480px) {
+  #finish-overlay {
+    box-sizing: border-box;
+    width: calc(100vw - 24px);
+    min-width: 0;
+    padding: 24px 18px;
+  }
+}
+
 .finish-title {
   font-size: 30px;
   font-weight: bold;
