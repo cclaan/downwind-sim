@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <meta name="theme-color" content="#1c3a4a" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="format-detection" content="telephone=no" />
+    <meta name="description" content="Downwind SUP foiling on the river bumps off the Hatchery at Hood River: paddle up, carve, pump." />
+    <title>Hood River Foil Sim</title>
+    <link rel="icon" href="data:," />
+    <style>
+      /* Before the stylesheet arrives: the right background and a word while the river is built.
+         The note sits over the canvas and under the UI: a first-time visitor reads the help card
+         meanwhile, and the card (which says the same until its buttons can start a run) covers it. */
+      html, body { margin: 0; height: 100%; overflow: hidden; background: #1c3a4a; }
+      #boot {
+        position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+        padding: 24px; text-align: center; pointer-events: none;
+        font: 600 16px/1.4 ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+        color: rgba(246, 249, 250, 0.85);
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="scene"></canvas>
+    <div id="boot">Building the river…</div>
+    <div id="ui"></div>
+    <script>
+      // The loading note: gone as soon as the game says it is ready. Never shown in captures.
+      (function () {
+        var note = document.getElementById('boot');
+        if (!note) return;
+        if (/[?&]capture(=|&|$)/.test(location.search)) { note.remove(); return; }
+        // an error before the game is ready usually means no WebGL 2; keep waiting all the same,
+        // so the note still goes away if the game does come up
+        window.addEventListener('error', function () {
+          if (note.isConnected) note.textContent = 'The game could not start in this browser (it needs WebGL 2).';
+        });
+        (function wait() {
+          if (window.__hr && window.__hr.ready) { note.remove(); return; }
+          requestAnimationFrame(wait);
+        })();
+      })();
+    </script>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

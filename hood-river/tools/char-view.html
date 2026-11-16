@@ -1,0 +1,125 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Character check</title>
+<link rel="icon" href="data:,">
+<style>
+html, body { margin: 0; height: 100%; overflow: hidden; background: #9fb8c8; }
+canvas { display: block; }
+#info { position: fixed; left: 8px; top: 6px; font: 12px/1.4 system-ui, sans-serif; color: #123; white-space: pre; }
+</style>
+</head>
+<body>
+<div id="info">loading…</div>
+<script type="module">
+// Dev-only check page for the character models; not part of the game build.
+//   /tools/char-view.html?files=characters/man-foiler.glb,characters/woman-foiler.glb&pose=ride&view=side&dist=7
+import * as THREE from 'three'
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
+
+const q = new URLSearchParams(location.search)
+const files = (q.get('files') ?? 'characters/man-foiler.glb,characters/woman-foiler.glb').split(',')
+const pose = q.get('pose') ?? 'rest'
+const view = q.get('view') ?? 'front'
+const gap = Number(q.get('gap') ?? 1.9)
+const dist = Number(q.get('dist') ?? 6.5)
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true })
+renderer.setPixelRatio(Math.min(2, devicePixelRatio))
+renderer.setSize(innerWidth, innerHeight)
+renderer.outputColorSpace = THREE.SRGBColorSpace
+renderer.toneMapping = THREE.ACESFilmicToneMapping
+document.body.appendChild(renderer.domElement)
+const scene = new THREE.Scene()
+scene.background = new THREE.Color(0x9fb8c8)
+scene.add(new THREE.HemisphereLight(0xe8f2ff, 0x4a5a48, 1.4))
+const sun = new THREE.DirectionalLight(0xffffff, 2.6)
+sun.position.set(2.5, 5, 4)
+scene.add(sun)
+const back = new THREE.DirectionalLight(0xffffff, 1.2)
+back.position.set(-2, 3, -4)
+scene.add(back)
+const ground = new THREE.Mesh(new THREE.CircleGeometry(8, 48), new THREE.MeshStandardMaterial({ color: 0x5f7f78, roughness: 0.9 }))
+ground.rotation.x = -Math.PI / 2
+scene.add(ground)
+
+const loader = new GLTFLoader()
+const t0 = performance.now()
+const loaded = await Promise.all(files.map((f) => loader.loadAsync('/' + f)))
+const loadMs = performance.now() - t0
+
+const pA = new THREE.Vector3(), pB = new THREE.Vector3()
+const qTurn = new THREE.Quaternion(), qBone = new THREE.Quaternion(), qParent = new THREE.Quaternion(), qRoot = new THREE.Quaternion()
+function findBone(root, suffix) {
+  let hit = null
+  root.traverse((o) => { if (!hit && o.isBone && o.name.replace(/[^A-Za-z0-9]/g, '').endsWith(suffix)) hit = o })
+  return hit
+}
+// Turn a bone so that it points at its child along dir (given in the model's frame: +z forward,
+// +x the character's left). The same idea would drive the game's rider from the pose solver.
+function aim(root, name, childName, dir) {
+  const b = findBone(root, name), c = findBone(root, childName)
+  if (!b || !c) return false
+  root.updateMatrixWorld(true)
+  b.getWorldPosition(pA)
+  c.getWorldPosition(pB)
+  const cur = pB.sub(pA).normalize()
+  const want = dir.clone().applyQuaternion(root.getWorldQuaternion(qRoot)).normalize()
+  qTurn.setFromUnitVectors(cur, want)
+  b.getWorldQuaternion(qBone)
+  b.parent.getWorldQuaternion(qParent)
+  b.quaternion.copy(qParent.invert().multiply(qTurn.multiply(qBone)))
+  b.updateMatrixWorld(true)
+  return true
+}
+const V = (x, y, z) => new THREE.Vector3(x, y, z)
+function ride(root) {
+  // a foiling crouch: knees bent forward, chest over, arms down and forward
+  aim(root, 'Spine', 'Spine1', V(0, 1, 0.25))
+  aim(root, 'Spine1', 'Spine2', V(0, 1, 0.35))
+  aim(root, 'Spine2', 'Neck', V(0, 1, 0.3))
+  aim(root, 'Neck', 'Head', V(0, 1, 0.05))
+  for (const [s, x] of [['Left', 1], ['Right', -1]]) {
+    aim(root, s + 'UpLeg', s + 'Leg', V(0.08 * x, -1, 0.75))
+    aim(root, s + 'Leg', s + 'Foot', V(0.02 * x, -1, -0.45))
+    aim(root, s + 'Arm', s + 'ForeArm', V(0.35 * x, -1, 0.25))
+    aim(root, s + 'ForeArm', s + 'Hand', V(0.15 * x, -0.4, 1))
+  }
+  // put the feet back on the ground
+  root.updateMatrixWorld(true)
+  const lf = findBone(root, 'LeftToeBase'), rf = findBone(root, 'RightToeBase')
+  if (lf && rf) root.position.y -= Math.min(lf.getWorldPosition(pA).y, rf.getWorldPosition(pB).y) - 0.03
+}
+
+const lines = []
+loaded.forEach((g, i) => {
+  const root = g.scene
+  root.position.x = (i - (loaded.length - 1) / 2) * gap
+  scene.add(root)
+  if (pose === 'ride') ride(root)
+  let tris = 0, bones = 0
+  const maps = new Set()
+  root.traverse((o) => {
+    if (o.isMesh) {
+      tris += (o.geometry.index ? o.geometry.index.count : o.geometry.attributes.position.count) / 3
+      for (const k of ['map', 'normalMap', 'roughnessMap', 'metalnessMap']) if (o.material[k]) maps.add(`${k} ${o.material[k].image.width}`)
+    }
+    if (o.isBone) bones++
+  })
+  lines.push(`${files[i].split('/').pop()}: ${tris} triangles, ${bones} bones, ${[...maps].join(', ')}`)
+})
+lines.push(`loaded in ${loadMs.toFixed(0)} ms`)
+document.getElementById('info').textContent = lines.join('\n')
+
+const cam = new THREE.PerspectiveCamera(30, innerWidth / innerHeight, 0.1, 200)
+const look = new THREE.Vector3(0, 0.9, 0)
+const dirs = { front: V(0, 0.12, 1), back: V(0, 0.18, -1), side: V(1, 0.1, 0), quarter: V(-0.7, 0.25, -0.7) }
+cam.position.copy(look).addScaledVector((dirs[view] ?? dirs.front).normalize(), dist)
+cam.lookAt(look)
+renderer.render(scene, cam)
+window.__ready = true
+</script>
+</body>
+</html>

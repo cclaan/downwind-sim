@@ -1,0 +1,1044 @@
+:root {
+  color-scheme: dark;
+  --hud-ink: #f6f9fa;
+  --hud-dim: rgba(246, 249, 250, 0.78);
+  --hud-panel: rgba(6, 20, 28, 0.6);
+  --hud-line: rgba(255, 255, 255, 0.28);
+  --hud-good: #3be283;
+  --hud-bad: #ff5d50;
+  --hud-warn: #ffb829;
+  --hud-water: rgba(74, 170, 222, 0.42);
+  --safe-top: max(8px, env(safe-area-inset-top, 0px));
+  --safe-right: max(8px, env(safe-area-inset-right, 0px));
+  --safe-bottom: max(8px, env(safe-area-inset-bottom, 0px));
+  --safe-left: max(8px, env(safe-area-inset-left, 0px));
+  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: #1c3a4a;
+  overscroll-behavior: none;
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+#scene {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  touch-action: none;
+  outline: none;
+}
+
+/* Everything drawn over the canvas goes inside #ui. It ignores pointers by default;
+   interactive children turn them back on (and carry data-hr-ui so the touch controls
+   leave them alone). */
+#ui {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  color: var(--hud-ink);
+}
+
+/* Until the first frame is on the screen only the help card may show: the HUD, the buttons
+   and the thumb hints would sit over an empty canvas while the river is being built. */
+#ui:not(.is-ready) > :not(.hr-help) {
+  visibility: hidden;
+}
+
+/* Stills must not depend on wall-clock time (set in headless captures): no fades in the HUD,
+   the thumb hints, the buttons or the help card. Not the tuning panel: lil-gui finishes
+   opening a folder on the end of its own transition. */
+#ui.is-static > :not(.hr-tune),
+#ui.is-static > :not(.hr-tune) * {
+  transition: none !important;
+  animation: none !important;
+}
+
+/* ------------------------------------------------------------------------------------
+   HUD. No backdrop-filter anywhere: it re-rasterises the overlay on every canvas frame.
+   Bars move by transform only, so the 10 Hz writes never cause layout.
+   Each island (cluster, variometer and prompt, session line, buttons) is its own small
+   compositor layer; left to itself the browser paints them all into one layer the size
+   of the screen, because they overlap the canvas from corner to corner.
+   Nothing is smaller than 12 px: it has to be read at arm's length in daylight.
+   ------------------------------------------------------------------------------------ */
+.hr-hud {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  font-size: 16px;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7);
+}
+
+.hr-hud i {
+  display: block;
+  font-style: normal;
+}
+
+/* a fixed width, so the variometer beside it never has to guess where it ends */
+.hr-cluster {
+  position: absolute;
+  left: var(--safe-left);
+  top: var(--safe-top);
+  box-sizing: border-box;
+  width: 17em;
+  display: flex;
+  align-items: stretch;
+  gap: 0.55em;
+  padding: 0.4em 0.65em 0.4em 0.4em;
+  border-radius: 0.75em;
+  background: var(--hud-panel);
+  will-change: transform;
+}
+
+/* ---- mast gauge: the foil from behind, against a fixed water line ---- */
+.hr-gauge {
+  position: relative;
+  width: 3.9em;
+  height: 5em;
+  overflow: hidden;
+  border-radius: 0.45em;
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.hr-gauge::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  box-shadow: inset 0 0 0 1px var(--hud-line);
+}
+
+.hr-gauge-water {
+  position: absolute;
+  inset: 50% 0 0 0;
+  background: var(--hud-water);
+}
+
+.hr-gauge-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 2px;
+  margin-top: -1px;
+  background: rgba(220, 242, 255, 0.95);
+}
+
+.hr-foil {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 0;
+  height: 0;
+  will-change: transform;
+  transition: transform 0.1s linear;
+}
+
+.hr-mast,
+.hr-wing,
+.hr-board {
+  position: absolute;
+  background: #fff;
+}
+
+.hr-mast {
+  left: -0.07em;
+  bottom: 0;
+  width: 0.14em;
+}
+
+.hr-wing {
+  top: -0.11em;
+  height: 0.22em;
+  border-radius: 0.11em;
+}
+
+.hr-board {
+  height: 0.32em;
+  border-radius: 0.16em;
+}
+
+.hr-gauge.is-high .hr-wing,
+.hr-gauge.is-low .hr-board {
+  background: var(--hud-warn);
+}
+
+.hr-gauge.is-breach .hr-wing,
+.hr-gauge.is-touch .hr-board {
+  background: var(--hud-bad);
+}
+
+.hr-gauge.is-high::after,
+.hr-gauge.is-low::after {
+  box-shadow: inset 0 0 0 2px var(--hud-warn);
+}
+
+.hr-gauge.is-breach::after,
+.hr-gauge.is-touch::after {
+  box-shadow: inset 0 0 0 2px var(--hud-bad);
+}
+
+/* ---- speed and stamina ---- */
+.hr-speedbox {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 0.1em 0 0.05em;
+}
+
+.hr-speed {
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-end;
+  gap: 0.35em;
+}
+
+.hr-num {
+  font-size: 3.3em;
+  font-weight: 800;
+  line-height: 0.92;
+  letter-spacing: -0.02em;
+  text-align: right;
+}
+
+.hr-num.is-slow {
+  color: var(--hud-warn);
+}
+
+.hr-num.is-stall {
+  color: var(--hud-bad);
+}
+
+.hr-unit {
+  display: flex;
+  flex-direction: column;
+  width: 4.1em;
+  padding-bottom: 0.12em;
+}
+
+.hr-unit b {
+  font-size: 1.05em;
+  font-weight: 700;
+}
+
+.hr-cap {
+  font-size: max(12px, 0.75em);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.hr-stam {
+  position: relative;
+  height: 0.6em;
+  overflow: hidden;
+  border-radius: 0.3em;
+  background: rgba(255, 255, 255, 0.16);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.25);
+}
+
+.hr-stam-slow,
+.hr-stam-fast {
+  position: absolute;
+  inset: 0;
+  transform-origin: 0 50%;
+  transform: scaleX(0);
+  will-change: transform;
+  transition: transform 0.1s linear;
+}
+
+/* where the slow store ends and the quick one begins when both are full */
+.hr-stam-notch {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 80%;
+  width: 2px;
+  margin-left: -1px;
+  background: rgba(6, 20, 28, 0.55);
+}
+
+.hr-stam-slow {
+  background: #25b98a;
+}
+
+.hr-stam-fast {
+  background: #f1ffb4;
+}
+
+.hr-stam.is-low .hr-stam-slow {
+  background: var(--hud-warn);
+}
+
+.hr-stam.is-empty .hr-stam-slow,
+.hr-stam.is-empty .hr-stam-fast {
+  background: var(--hud-bad);
+}
+
+/* ---- variometer and prompt ---- */
+/* wide screens: dead centre, kept clear of the cluster on one side and its mirror on the other */
+.hr-top {
+  position: absolute;
+  left: 50%;
+  top: var(--safe-top);
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.45em;
+  max-width: calc(100vw - 36em - 2 * var(--safe-left));
+  will-change: transform;
+}
+
+.hr-vario {
+  box-sizing: border-box;
+  max-width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 0.55em;
+  padding: 0.32em 0.7em;
+  border-radius: 1em;
+  background: var(--hud-panel);
+  /* a tap switches the audible variometer (the sound module's 'hr:vario') */
+  pointer-events: auto;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.hr-vario.is-off {
+  display: none;
+}
+
+.hr-vario-lab {
+  flex: none;
+  font-size: max(12px, 0.75em);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+/* the track gives way first when the room between the cluster and the buttons is short */
+.hr-vario-track {
+  position: relative;
+  flex: 0 1 auto;
+  width: 14em;
+  min-width: 5em;
+  height: 1em;
+  overflow: hidden;
+  border-radius: 0.5em;
+  background: rgba(255, 255, 255, 0.15);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.25);
+}
+
+.hr-vario-neg,
+.hr-vario-pos {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 50%;
+  transform: scaleX(0);
+  will-change: transform;
+  transition: transform 0.1s linear;
+}
+
+.hr-vario-neg {
+  right: 50%;
+  transform-origin: 100% 50%;
+  background: var(--hud-bad);
+}
+
+.hr-vario-pos {
+  left: 50%;
+  transform-origin: 0 50%;
+  background: var(--hud-good);
+}
+
+.hr-vario-zero {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: #fff;
+}
+
+.hr-vario-val {
+  flex: none;
+  min-width: 4.3em;
+  font-size: 0.92em;
+  font-weight: 700;
+  text-align: right;
+}
+
+.hr-vario.is-pos .hr-vario-val {
+  color: var(--hud-good);
+}
+
+.hr-vario.is-neg .hr-vario-val {
+  color: var(--hud-bad);
+}
+
+.hr-prompt {
+  box-sizing: border-box;
+  max-width: 100%;
+  padding: 0.3em 0.85em;
+  border-radius: 1em;
+  overflow: hidden;
+  font-weight: 650;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  background: rgba(6, 20, 28, 0.64);
+  opacity: 0;
+  transition: opacity 0.3s;
+}
+
+.hr-prompt.is-on {
+  opacity: 1;
+}
+
+.hr-prompt.is-urgent {
+  font-size: 1.12em;
+  font-weight: 800;
+  color: #1c1300;
+  text-shadow: none;
+  background: var(--hud-warn);
+}
+
+.hr-prompt.is-go {
+  font-weight: 800;
+  color: #03230f;
+  text-shadow: none;
+  background: var(--hud-good);
+}
+
+/* a caution that is not an emergency: out of breath, too shallow */
+.hr-prompt.is-rest {
+  font-weight: 750;
+  color: #1c1300;
+  text-shadow: none;
+  background: var(--hud-warn);
+}
+
+/* the short wording still did not fit the room there is (see writeLine in hud.ts) */
+.hr-prompt.is-small {
+  font-size: max(12px, 0.9em);
+}
+
+/* ---- session line and the optional frame-rate line ---- */
+.hr-session {
+  position: absolute;
+  left: 50%;
+  bottom: var(--safe-bottom);
+  transform: translateX(-50%);
+  padding: 0.22em 0.75em;
+  border-radius: 1em;
+  font-size: max(12px, 0.82em);
+  font-weight: 600;
+  white-space: nowrap;
+  background: var(--hud-panel);
+  will-change: transform;
+}
+
+.hr-session:empty {
+  display: none;
+}
+
+.hr-fps {
+  position: absolute;
+  left: var(--safe-left);
+  top: calc(var(--safe-top) + 100px);
+  display: none;
+  padding: 2px 6px;
+  border-radius: 6px;
+  font: 600 11px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: nowrap;
+  background: var(--hud-panel);
+}
+
+.hr-fps.is-on {
+  display: block;
+}
+
+/* phones: a little smaller */
+@media (max-height: 500px), (max-width: 500px) {
+  .hr-hud {
+    font-size: 14px;
+  }
+
+  .hr-fps {
+    top: calc(var(--safe-top) + 88px);
+  }
+}
+
+/* the narrowest phones: the cluster has to fit beside the two columns of buttons */
+@media (max-width: 350px) {
+  .hr-hud {
+    font-size: 12px;
+  }
+}
+
+/* anything but a wide desktop: the variometer and the prompt take the room between the
+   cluster and the corner buttons instead of the dead centre, where the cluster's mirror
+   image would cost them 90 px (the buttons are a row of four here, 194 px) */
+@media (max-width: 1399px) {
+  .hr-top {
+    left: calc(var(--safe-left) + 17.6em);
+    right: calc(var(--safe-right) + 204px);
+    max-width: none;
+    transform: none;
+  }
+}
+
+/* narrower than a desktop: the buttons are two by two (94 px: see below) */
+@media (max-width: 1099px) {
+  .hr-top {
+    right: calc(var(--safe-right) + 104px);
+  }
+}
+
+/* a phone held upright, a tablet held upright, a narrow window: there is height to spare and
+   no width, so the variometer and the prompt get a row of their own below the cluster */
+@media (max-width: 620px), (max-width: 859px) and (min-height: 501px) {
+  .hr-top {
+    left: var(--safe-left);
+    right: var(--safe-right);
+    top: calc(var(--safe-top) + max(6.5em, 102px));
+  }
+
+  .hr-fps {
+    top: calc(var(--safe-top) + 176px);
+  }
+}
+
+/* ------------------------------------------------------------------------------------
+   Corner buttons
+   ------------------------------------------------------------------------------------ */
+/* 44 px: a thumb's worth. In order: camera, sound, help, restart; so restart is at the far
+   end of the row, and diagonally across from the camera when they go two by two. */
+.hr-buttons {
+  position: absolute;
+  z-index: 2;
+  right: var(--safe-right);
+  top: var(--safe-top);
+  display: flex;
+  gap: 6px;
+  pointer-events: auto;
+  will-change: transform;
+}
+
+.hr-btn {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--hud-line);
+  border-radius: 11px;
+  color: var(--hud-ink);
+  background: var(--hud-panel);
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.hr-btn:active {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+/* restart, asked for in mid-flight: a second tap does it */
+.hr-btn.is-armed {
+  border-color: transparent;
+  color: #1c1300;
+  background: var(--hud-warn);
+}
+
+.hr-btn svg {
+  width: 22px;
+  height: 22px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  pointer-events: none;
+}
+
+.hr-btn .hr-dot {
+  fill: currentColor;
+  stroke: none;
+}
+
+.hr-btn .hr-cross,
+.hr-btn.is-muted .hr-wave {
+  display: none;
+}
+
+.hr-btn.is-muted .hr-cross {
+  display: inline;
+}
+
+/* anything narrower than a desktop: two by two, so the variometer and the prompt keep their room */
+@media (max-width: 1099px) {
+  .hr-buttons {
+    display: grid;
+    grid-template-columns: 44px 44px;
+  }
+}
+
+/* ------------------------------------------------------------------------------------
+   Touch controls: the stick and the paddle/pump ring exist only while a finger is down
+   ------------------------------------------------------------------------------------ */
+.hr-touch {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.hr-stick,
+.hr-knob,
+.hr-pump {
+  position: absolute;
+  left: 0;
+  top: 0;
+  box-sizing: border-box;
+  border-radius: 50%;
+  opacity: 0;
+  will-change: transform;
+}
+
+.hr-stick {
+  width: 116px;
+  height: 116px;
+  margin: -58px 0 0 -58px;
+  border: 2px solid rgba(255, 255, 255, 0.6);
+  background: rgba(6, 20, 28, 0.22);
+}
+
+.hr-knob {
+  width: 54px;
+  height: 54px;
+  margin: -27px 0 0 -27px;
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+}
+
+.hr-pump {
+  width: 78px;
+  height: 78px;
+  margin: -39px 0 0 -39px;
+  border: 2px solid rgba(255, 255, 255, 0.65);
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.hr-pump i {
+  position: absolute;
+  inset: -2px;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  opacity: 0;
+}
+
+.hr-stick.is-on,
+.hr-knob.is-on,
+.hr-pump.is-on {
+  opacity: 1;
+}
+
+/* where the thumbs go, shown on touch screens until each side has been used once */
+.hr-hint {
+  position: absolute;
+  bottom: calc(var(--safe-bottom) + 11vh);
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.9);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.75);
+  transition: opacity 0.4s;
+  /* each its own small layer, like the HUD's islands */
+  will-change: opacity;
+}
+
+.hr-touch.is-touch .hr-hint {
+  display: flex;
+}
+
+.hr-hint.is-done {
+  opacity: 0;
+}
+
+.hr-hint i {
+  width: 84px;
+  height: 84px;
+  border: 2px dashed rgba(255, 255, 255, 0.65);
+  border-radius: 50%;
+}
+
+.hr-hint-stick {
+  left: calc(var(--safe-left) + 10vw);
+}
+
+.hr-hint-pump {
+  right: calc(var(--safe-right) + 10vw);
+}
+
+.hr-touch.is-swapped .hr-hint-stick {
+  left: auto;
+  right: calc(var(--safe-right) + 10vw);
+}
+
+.hr-touch.is-swapped .hr-hint-pump {
+  right: auto;
+  left: calc(var(--safe-left) + 10vw);
+}
+
+/* ------------------------------------------------------------------------------------
+   Help card
+   ------------------------------------------------------------------------------------ */
+.hr-help {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  padding: var(--safe-top) var(--safe-right) var(--safe-bottom) var(--safe-left);
+  background: rgba(3, 12, 18, 0.45);
+  pointer-events: auto;
+}
+
+.hr-help.is-open {
+  display: flex;
+}
+
+/* the text scrolls when the screen is short; the buttons stay in sight below it */
+.hr-card {
+  position: relative;
+  box-sizing: border-box;
+  width: min(780px, 100%);
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--hud-line);
+  border-radius: 16px;
+  font-size: 15px;
+  line-height: 1.4;
+  /* opaque: while the river is being built the loading note is underneath it */
+  background: #081822;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+}
+
+.hr-card-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
+  padding: 16px 20px 2px;
+}
+
+.hr-card h1 {
+  margin: 0 36px 2px 0;
+  font-size: 1.35em;
+  font-weight: 800;
+}
+
+.hr-card b {
+  color: #fff;
+}
+
+.hr-lede {
+  margin: 0 0 10px;
+  color: var(--hud-dim);
+}
+
+.hr-cols {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 24px;
+}
+
+.hr-ideas {
+  margin: 0;
+  padding-left: 1.3em;
+  color: var(--hud-dim);
+}
+
+.hr-ideas li {
+  margin-bottom: 6px;
+}
+
+.hr-keys {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 5px 12px;
+  align-content: start;
+  margin: 0;
+}
+
+.hr-keys dt {
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.hr-keys dd {
+  margin: 0;
+  color: var(--hud-dim);
+}
+
+.hr-legend {
+  margin: 8px 0 10px;
+  font-size: 0.9em;
+  color: var(--hud-dim);
+}
+
+/* only on a touch screen held upright */
+.hr-rotate {
+  display: none;
+  margin: 0 0 10px;
+  font-weight: 700;
+  color: var(--hud-warn);
+}
+
+@media (pointer: coarse) and (orientation: portrait) {
+  .hr-rotate {
+    display: block;
+  }
+}
+
+.hr-card .hr-good {
+  color: var(--hud-good);
+}
+
+.hr-card .hr-bad {
+  color: var(--hud-bad);
+}
+
+.hr-card .hr-warn {
+  color: var(--hud-warn);
+}
+
+.hr-actions {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 20px 14px;
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+/* while the river is being built the card can be read, but there is nothing to start yet */
+.hr-wait {
+  display: none;
+  min-height: 40px;
+  line-height: 40px;
+  font-weight: 700;
+  color: var(--hud-dim);
+}
+
+.hr-card.is-booting .hr-wait {
+  display: block;
+}
+
+.hr-card.is-booting .hr-actions button {
+  display: none;
+}
+
+.hr-actions button {
+  min-height: 40px;
+  padding: 0 16px;
+  border: 1px solid var(--hud-line);
+  border-radius: 11px;
+  font: inherit;
+  font-weight: 700;
+  color: var(--hud-ink);
+  background: rgba(255, 255, 255, 0.1);
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+/* rider: two joined buttons, the chosen one lit */
+.hr-rider {
+  display: flex;
+  margin-right: auto;
+}
+
+.hr-actions .hr-rider button {
+  padding: 0 14px;
+  border-radius: 0;
+  font-weight: 600;
+  color: var(--hud-dim);
+}
+
+.hr-actions .hr-rider button:first-child {
+  border-radius: 11px 0 0 11px;
+}
+
+.hr-actions .hr-rider button:last-child {
+  border-left: 0;
+  border-radius: 0 11px 11px 0;
+}
+
+.hr-actions .hr-rider button[aria-pressed='true'] {
+  color: var(--hud-ink);
+  background: rgba(255, 255, 255, 0.3);
+}
+
+.hr-actions .hr-go {
+  border-color: transparent;
+  color: #03230f;
+  background: var(--hud-good);
+}
+
+.hr-x {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 0;
+  border-radius: 10px;
+  font: 400 26px/1 system-ui, sans-serif;
+  color: var(--hud-ink);
+  background: transparent;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+@media (max-width: 640px) {
+  .hr-cols {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* a phone held upright: the two lesser buttons share a row, so the text keeps its height */
+@media (max-width: 500px) {
+  .hr-actions {
+    gap: 8px;
+  }
+
+  .hr-actions button {
+    padding: 0 12px;
+    font-size: 14px;
+  }
+}
+
+@media (max-height: 430px) {
+  .hr-card {
+    font-size: 13px;
+    line-height: 1.32;
+  }
+
+  .hr-card-body {
+    padding: 10px 16px 0;
+  }
+
+  .hr-actions {
+    padding: 8px 16px 10px;
+  }
+
+  .hr-wait {
+    min-height: 36px;
+    line-height: 36px;
+  }
+
+  .hr-lede {
+    margin-bottom: 6px;
+  }
+
+  .hr-legend {
+    margin: 6px 0 8px;
+  }
+
+  .hr-actions button {
+    min-height: 36px;
+  }
+}
+
+/* ------------------------------------------------------------------------------------
+   Tuning panel (lil-gui), under the corner buttons
+   ------------------------------------------------------------------------------------ */
+.hr-tune {
+  position: absolute;
+  z-index: 3;
+  /* below the buttons and the prompt line, which can reach this far at its longest */
+  top: calc(var(--safe-top) + 80px);
+  right: var(--safe-right);
+  bottom: var(--safe-bottom);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  pointer-events: none;
+}
+
+/* narrower than a desktop: under the two rows of buttons; where the variometer and the
+   prompt have a row of their own (see .hr-top): clear of that too */
+@media (max-width: 1099px) {
+  .hr-tune {
+    top: calc(var(--safe-top) + 102px);
+  }
+}
+
+@media (max-width: 620px), (max-width: 859px) and (min-height: 501px) {
+  .hr-tune {
+    top: calc(var(--safe-top) + 182px);
+  }
+}
+
+.hr-tune .lil-gui.lil-root {
+  max-height: 100%;
+  pointer-events: auto;
+  overscroll-behavior: contain;
+  --name-width: 46%;
+}
+
+.hr-tune .lil-gui input {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.hr-tune .hr-note {
+  padding: 2px var(--padding, 4px) 6px;
+  font-size: 10.5px;
+  line-height: 1.35;
+  white-space: normal;
+  color: rgba(235, 235, 235, 0.7);
+}
+
+.hr-tune .hr-readout {
+  margin: 0;
+  padding: 4px var(--padding, 4px) 6px;
+  font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: pre;
+  color: #d8f3dc;
+}
